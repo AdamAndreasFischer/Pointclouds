@@ -47,6 +47,12 @@ def main(dir_path, n_clouds):
 
     # 8.Create a filter to align depth frame to color frame
     align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
+
+    edge_noise_filter = NoiseRemovalFilter()
+    edge_noise_filter.enable(True)
+    print(dir(edge_noise_filter))
+    print(edge_noise_filter.get_filter_params())
+
     point_cloud_filter.set_create_point_format(OBFormat.RGB_POINT)
     print("Capture pointcloud")
     while True:
@@ -56,25 +62,25 @@ def main(dir_path, n_clouds):
 
         if frames is None:
             continue
-        depth_frame = frames.get_depth_frame()
-        color_frame = frames.get_color_frame()
-        print(depth_frame)
+        
      
         # 10.Filter the data
         align_frame = align_filter.process(frames)
         if not align_frame:
             continue
+        
+        noise_removed = edge_noise_filter.process(align_frame)
 
         # 11.Apply the point cloud filter
-        point_cloud_frame = point_cloud_filter.process(align_frame)
+        point_cloud_frame = point_cloud_filter.process(noise_removed)
         
         # 12.save point cloud
         print("Saving pointcloud...")
-        #save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), point_cloud_frame)
+        save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), point_cloud_frame)
 
-        #pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"))
+        pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"))
        
-        #o3d.visualization.draw_geometries([pcd])
+        o3d.visualization.draw_geometries([pcd])
 
         break
 
@@ -83,7 +89,7 @@ def main(dir_path, n_clouds):
 
 
 if __name__ == "__main__":
-    dir_path = "/home/adamfi/Codes/Mocap_process/sep1_clouds"
+    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/sep1_clouds"
     files = os.listdir(dir_path)
     n_clouds = 1
     for file in files:

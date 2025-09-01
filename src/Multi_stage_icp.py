@@ -177,7 +177,7 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
 
 def main():
 
-    path = "/home/adamfi/Codes/Mocap_process/sep1_clouds"
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/sep1_clouds"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
@@ -231,7 +231,7 @@ def main():
     for cloud in refined_pcs:
         final_cloud += cloud
 
-    o3d.io.write_point_cloud("/home/adamfi/Codes/Mocap_process/Alligned_clouds/alligned_denoised.ply",final_cloud, write_ascii = True )
+    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/pyorbbec_sdk.ply",final_cloud, write_ascii = True )
     draw_geometries([final_cloud])
 
 
