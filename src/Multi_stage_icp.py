@@ -9,6 +9,8 @@ import multiprocessing
 import time
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
+
 
 NUM_THREADS = max(1, multiprocessing.cpu_count())
 
@@ -120,16 +122,26 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
     radius_normal = voxel_size * 2
     # 3. Initial alignment - use pose if available, otherwise identity
     init_transform = np.eye(4) if initial_pose is None else initial_pose
+
+    initial_evaluation = o3d.pipelines.registration.evaluate_registration(
+        source_down, target_down, voxel_size*2, init_transform)
+    print(f"Initial alignment fitness: {initial_evaluation.fitness:.4f}")
+
     
     # 4. Coarse alignment with larger threshold
     coarse_result = o3d.pipelines.registration.registration_icp(
-        source_down, target_down, voxel_size * 10, init_transform,
+        source_down, target_down, voxel_size *6,  init_transform,
         o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=50))
     
     source_course = copy.deepcopy(source)
-    source_course.transform(coarse_result.transformation)
+    #source_course.transform(coarse_result.transformation)
     #draw_geometries([source_course, target])
+    if coarse_result.fitness <= initial_evaluation.fitness * 0.9:  # Only accept if significantly worse
+        print("Warning: Coarse ICP made alignment worse, keeping initial transform")
+        coarse_result.transformation = init_transform
+        coarse_result.fitness = initial_evaluation.fitness
+
 
     print(f"Coarse alignment fitness: {coarse_result.fitness}")
     
@@ -177,15 +189,15 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
 
 def main():
 
-    path = "/home/adamfi/Codes/Pointclouds/pointclouds/sep1_clouds"
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room3"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
-    std_ratio = 2.0
+    std_ratio = 1.5
     original_clouds = read_clouds(path)
 
-    source = original_clouds[1]
-    target = original_clouds[0]
+    #source = original_clouds[1]
+    #target = original_clouds[0]
 
     transform_coords = np.array([
         [0, 0, 1, 0],
@@ -195,6 +207,7 @@ def main():
     ])    
 
     initial_pcs = []
+    i=0
     for pose, pcd_original in zip(poses, original_clouds):
         pcd = copy.deepcopy(pcd_original)
 
@@ -208,12 +221,17 @@ def main():
         T[:3, :3] = R_mat
         T[:3, 3] = t*1000  # Convert pose to mm as pointclouds are measured in mm
         print(T)
-
+        
         T_total = T@transform_coords
         pcd.transform(T_total)
         initial_pcs.append(pcd)
+        #if i >0:
+        #    print(f"Cloud {i} and {i+1}")
+        #    o3d.visualization.draw_geometries([initial_pcs[i], initial_pcs[i-1]])
+        #i+=1
 
     o3d.visualization.draw_geometries(initial_pcs)
+    
 
     refined_pcs = [copy.deepcopy(initial_pcs[0])]
     for i in range(1,len(initial_pcs)):
@@ -231,7 +249,7 @@ def main():
     for cloud in refined_pcs:
         final_cloud += cloud
 
-    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/pyorbbec_sdk.ply",final_cloud, write_ascii = True )
+    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/pyorbbec_sdk_full.ply",final_cloud, write_ascii = True )
     draw_geometries([final_cloud])
 
 

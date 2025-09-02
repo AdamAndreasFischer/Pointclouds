@@ -42,3 +42,24 @@ def pose_to_transform_matrix(pose):
     transform[:3, 3] = translation*1000
     
     return transform
+
+def re_save_pcd():
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room"
+    clouds = read_clouds(path)
+    for i, cloud in enumerate(clouds):
+        o3d.io.write_point_cloud(os.path.join(path, f"Cloud_pose{i+1}.ply"), cloud, write_ascii=True)
+
+def main():
+    path = "/home/adamfi/Codes/Pointclouds/utils"
+
+    poses = load_coord(path)
+
+    with open("poses.txt", "w") as f:
+        for i,pose in enumerate(poses):
+            f.write(f"Corner {i}: " + " ".join(map(str, pose[:3])) + "\n")
+
+
+
+
+if __name__ == "__main__":
+    re_save_pcd()

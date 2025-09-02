@@ -24,7 +24,7 @@ def pose_callback(msg):
     orient_w = msg['pose']['orientation']['w']
     
     # Create the combined pose list [x y z x y z w]
-    latest_pose = [pos_x, pos_y, pos_z, orient_x, orient_y, orient_z, orient_w]
+    latest_pose = np.array([pos_x, pos_y, pos_z, orient_x, orient_y, orient_z, orient_w], dtype=np.float32)
     
     #print(f"Received pose: {latest_pose}")
     pose_received = True
@@ -82,13 +82,30 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Try the full path first
-        dir_path = "/home/adamfi/Codes/Mocap_process/sep1_clouds"
+        dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room3"
 
         files = os.listdir(dir_path)
-        n_files = 1
+        # Extract existing pose numbers from filenames
+        existing_poses = []
         for file in files:
-            if file.endswith(".npy"):
-                n_files += 1
+            if file.startswith("pose_") and file.endswith(".npy"):
+                try:
+                    # Extract number between "pose_" and ".npy"
+                    number_str = file[len("pose_"):-4]  # Remove prefix and suffix
+                    pose_num = int(number_str)
+                    existing_poses.append(pose_num)
+                except ValueError:
+                    # Skip files that don't have valid numbers
+                    continue
+        
+        # Find the next available pose number
+        if existing_poses:
+            n_files = max(existing_poses) + 1
+        else:
+            n_files = 1
+        
+        print(f"Existing poses: {sorted(existing_poses)}")
+        print(f"Next pose number: {n_files}")
         
 
         filename = os.path.join(dir_path, f"pose_{n_files}.npy")

@@ -39,12 +39,15 @@ def detect_planar_patch(pcd):
         all_geometries["planes"].append(mesh)
         all_geometries["boxes"].append(obox)
     all_geometries["pcd"].append(pcd)
+    largest_plane = largest_plane.paint_uniform_color([0,0,0])
     geometries.append(largest_plane)
     geometries.append(box)
     geometries.append(pcd)
+    
+
 
     o3d.io.write_triangle_mesh("C:/Users/adamf/Codes/Mocap_process/Alligned_clouds/floor_plane.obj", largest_plane, write_ascii = True)
-    o3d.io.write_line_set("C:/Users/adamf/Codes/Mocap_process/Alligned_clouds/floor_box.ply", box, write_ascii = True)
+    #o3d.io.write_line_set("C:/Users/adamf/Codes/Mocap_process/Alligned_clouds/floor_box.ply", box, write_ascii = True)
 
 
     draw_geometries(geometries)
@@ -122,19 +125,20 @@ def expand_floor_mesh(floor_mesh, z_thickness=0.1, visualize=True):
         # Visualize before and after
         original_mesh = copy.deepcopy(floor_mesh)
         original_mesh.paint_uniform_color([1, 0, 0])  # Red
-        expanded_mesh.paint_uniform_color([0, 1, 0])  # Green
+        expanded_mesh.paint_uniform_color([0, 0, 0])  # Green
         
         print("Red: Original mesh, Green: Expanded mesh")
         o3d.visualization.draw_geometries([original_mesh, expanded_mesh])
     expanded_mesh.paint_uniform_color([0,0,0])
     return expanded_mesh
 
-cloud = o3d.io.read_point_cloud("/home/adamfi/Codes/Mocap_process/Alligned_clouds/ICP_reged.ply")
-plane = o3d.io.read_triangle_mesh("/home/adamfi/Codes/Mocap_process/Alligned_clouds/floor_plane.obj")
+cloud = o3d.io.read_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/ICP_reged.ply")
+plane = o3d.io.read_triangle_mesh("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/floor_plane.obj")
+
 
 expanded_mesh = expand_floor_mesh(plane, 50)
 
-o3d.visualization.add_point_light(position=[0, 0, 10], color=[1, 1, 1], intensity=1000)
+o3d.io.write_triangle_mesh("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/expanded_floor_plane.obj", expanded_mesh, write_ascii = True)
 
 o3d.visualization.draw_geometries([cloud, expanded_mesh])
 #detect_planar_patch(cloud)

@@ -45,11 +45,15 @@ def main(dir_path, n_clouds):
     # 7.Create point cloud filter
     point_cloud_filter = PointCloudFilter()
 
+    
+
     # 8.Create a filter to align depth frame to color frame
     align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
 
     edge_noise_filter = NoiseRemovalFilter()
     edge_noise_filter.enable(True)
+   
+
     print(dir(edge_noise_filter))
     print(edge_noise_filter.get_filter_params())
 
@@ -63,6 +67,7 @@ def main(dir_path, n_clouds):
         if frames is None:
             continue
         
+        
      
         # 10.Filter the data
         align_frame = align_filter.process(frames)
@@ -71,15 +76,21 @@ def main(dir_path, n_clouds):
         
         noise_removed = edge_noise_filter.process(align_frame)
 
+        #spatial_filtered = spatial_filter.process(noise_removed)
+
         # 11.Apply the point cloud filter
         point_cloud_frame = point_cloud_filter.process(noise_removed)
-        
+
         # 12.save point cloud
+        
         print("Saving pointcloud...")
         save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), point_cloud_frame)
 
+        print(f"Saving {os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply")}")
+
         pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"))
-       
+        o3d.io.write_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), pcd, write_ascii = True )
+        print(pcd)
         o3d.visualization.draw_geometries([pcd])
 
         break
@@ -89,12 +100,29 @@ def main(dir_path, n_clouds):
 
 
 if __name__ == "__main__":
-    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/sep1_clouds"
+    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room3"
     files = os.listdir(dir_path)
-    n_clouds = 1
-    for file in files:
-        if file.endswith(".ply"):
-            n_clouds += 1
     
-
+    # Extract existing pose numbers from filenames
+    existing_poses = []
+    for file in files:
+        if file.startswith("Cloud_pose") and file.endswith(".ply"):
+            try:
+                # Extract number between "Cloud_pose" and ".ply"
+                number_str = file[len("Cloud_pose"):-4]  # Remove prefix and suffix
+                pose_num = int(number_str)
+                existing_poses.append(pose_num)
+            except ValueError:
+                # Skip files that don't have valid numbers
+                continue
+    
+    # Find the next available pose number
+    if existing_poses:
+        n_clouds = max(existing_poses) + 1
+    else:
+        n_clouds = 1
+    
+    print(f"Existing poses: {sorted(existing_poses)}")
+    print(f"Next pose number: {n_clouds}")
+    
     main(dir_path, n_clouds)
