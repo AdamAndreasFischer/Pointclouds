@@ -17,7 +17,7 @@ NUM_THREADS = max(1, multiprocessing.cpu_count())
 def load_coord(path):
     print("Coord func")
     print(os.listdir(path))
-    paths = [path for path in os.listdir(path) if path.endswith(".npy")]
+    paths = [path for path in os.listdir(path) if path.endswith(".npy") and not "transformed" in path]
     paths.sort()
     paths = sorted(paths, key=len)
     poses = []
@@ -35,6 +35,19 @@ def read_clouds(path):
         clouds.append(o3d.io.read_point_cloud(os.path.join(path, ptc)))
 
     return clouds
+
+def read_multi_clouds(path):
+    folders = [f.path for f in os.scandir(path) if f.is_dir() and f.name.startswith("Cloud_pose")]
+    folders.sort()
+    folders = sorted(folders, key=len)
+    cloud_list = []
+    for folder in folders:
+        print(folder)
+        clouds = [cloud for cloud in os.listdir(os.path.join(path,folder)) if cloud.endswith(".ply")]
+        print(clouds)
+        pcd = o3d.io.read_point_cloud(os.path.join(folder, clouds[1]))
+        cloud_list.append(pcd)
+    return cloud_list
 
 def pose_to_transform_matrix(pose):
     """
@@ -189,16 +202,18 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
 
 def main():
 
-    path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room3"
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/multi_cloud_test"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
     std_ratio = 1.5
-    original_clouds = read_clouds(path)
-
+    original_clouds = read_multi_clouds(path)
+    #original_clouds = read_clouds(os.path.join(path, "Cloud_pose2"))
+    print(f"Loaded {len(original_clouds)} point clouds and {len(poses)} poses")
     #source = original_clouds[1]
     #target = original_clouds[0]
-
+    #poses = np.load(os.path.join(path, "pose_2.npy"))
+    #poses = np.repeat(poses[np.newaxis, ...], len(original_clouds), axis=0)
     transform_coords = np.array([
         [0, 0, 1, 0],
         [1, 0, 0, 0],
@@ -206,6 +221,8 @@ def main():
         [0, 0, 0, 1]
     ])    
 
+    
+    init_transforms = []
     initial_pcs = []
     i=0
     for pose, pcd_original in zip(poses, original_clouds):
@@ -220,36 +237,53 @@ def main():
         T = np.eye(4)
         T[:3, :3] = R_mat
         T[:3, 3] = t*1000  # Convert pose to mm as pointclouds are measured in mm
-        print(T)
+        #print(T)
         
         T_total = T@transform_coords
+        init_transforms.append(T_total)
         pcd.transform(T_total)
         initial_pcs.append(pcd)
         #if i >0:
         #    print(f"Cloud {i} and {i+1}")
         #    o3d.visualization.draw_geometries([initial_pcs[i], initial_pcs[i-1]])
         #i+=1
-
-    o3d.visualization.draw_geometries(initial_pcs)
     
+    o3d.visualization.draw_geometries(initial_pcs)
+    start_cloud = copy.deepcopy(original_clouds[0])
 
+    
     refined_pcs = [copy.deepcopy(initial_pcs[0])]
+    resulting_transforms = [copy.deepcopy(init_transforms[0])]
     for i in range(1,len(initial_pcs)):
         print(f"Refining cloud {i}...")
         source = copy.deepcopy(initial_pcs[i])
         target = copy.deepcopy(refined_pcs[-1])
 
         result, source_down = multi_stage_registration(source, target, voxel_size, max_nn, std_ratio)
-        
+        resulting_transforms.append(result.transformation@init_transforms[i])
+
         source_down.transform(result.transformation)
+      
+
         refined_pcs.append(source_down)
 
-    
+
+    for i, pose in enumerate(resulting_transforms):
+        t = pose[3:,3]
+        R_mat = pose[:3,:3]
+        quat = R.from_matrix(R_mat).as_quat()
+        coord = np.concatenate([t, quat])
+        np.save(f"{path}/pose_{i+1}_transformed.npy", coord)
+
+   
+    #np.savez("home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/full_room3_transforms.npz", full_save = True,  transforms=resulting_transforms, init_transforms=init_transforms)
+
+
     final_cloud = o3d.geometry.PointCloud()
     for cloud in refined_pcs:
         final_cloud += cloud
 
-    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/pyorbbec_sdk_full.ply",final_cloud, write_ascii = True )
+    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/Scene_table_obstacle.ply",final_cloud, write_ascii = True )
     draw_geometries([final_cloud])
 
 

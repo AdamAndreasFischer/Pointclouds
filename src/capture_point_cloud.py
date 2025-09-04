@@ -2,6 +2,7 @@ from pyorbbecsdk import *
 import os
 import open3d as o3d
 import copy
+import numpy
 
 save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
@@ -54,62 +55,78 @@ def main(dir_path, n_clouds):
     edge_noise_filter.enable(True)
    
 
-    print(dir(edge_noise_filter))
-    print(edge_noise_filter.get_filter_params())
-
     point_cloud_filter.set_create_point_format(OBFormat.RGB_POINT)
     print("Capture pointcloud")
+    i=1
+    if not os.path.exists(os.path.join(dir_path, f"Cloud_pose{n_clouds}")):
+        os.mkdir(os.path.join(dir_path, f"Cloud_pose{n_clouds}"))
+    pcds = []
     while True:
         # 9.Wait for frames
         frames = pipeline.wait_for_frames(100)
         
-
         if frames is None:
             continue
-        
-        
      
         # 10.Filter the data
         align_frame = align_filter.process(frames)
         if not align_frame:
             continue
-        
-        noise_removed = edge_noise_filter.process(align_frame)
+        print("Depth frame functions")
+        depth_data = frames.get_depth_frame()
+        print(dir(depth_data))
+        print(depth_data.__getstate__())
+        print(dir(frames))
+        #print(dir(point_frame))
+
+     
+        #noise_removed = edge_noise_filter.process(align_frame)
 
         #spatial_filtered = spatial_filter.process(noise_removed)
 
         # 11.Apply the point cloud filter
-        point_cloud_frame = point_cloud_filter.process(noise_removed)
-
+        point_cloud_frame = point_cloud_filter.process(align_frame)
+        points = point_cloud_filter.calculate(point_cloud_frame)
+        num_points = points.shape[0]
+        if num_points< 600000: 
+            i=-1
+            continue
+        print(f"Cloud contains {num_points} points")
+    
         # 12.save point cloud
         
         print("Saving pointcloud...")
-        save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), point_cloud_frame)
+        save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"), point_cloud_frame, )
 
-        print(f"Saving {os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply")}")
+        print(f"Saving {os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply")}")
 
-        pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"))
-        o3d.io.write_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}.ply"), pcd, write_ascii = True )
-        print(pcd)
-        o3d.visualization.draw_geometries([pcd])
+        pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"))
+        o3d.io.write_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"), pcd, write_ascii = True )
+        pcd_pts = numpy.array(pcd.points)
+        if pcd_pts.shape[0] <600000:
+            i-=1
+        else:
+            pcds.append(pcd)
 
-        break
-
+        if i==100:
+            break
+        i+=1
+    o3d.visualization.draw_geometries(pcds)
     # 13.Stop the pipeline
     pipeline.stop()
 
 
 if __name__ == "__main__":
-    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/full_room3"
+    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/multi_cloud_test"
     files = os.listdir(dir_path)
     
     # Extract existing pose numbers from filenames
     existing_poses = []
     for file in files:
-        if file.startswith("Cloud_pose") and file.endswith(".ply"):
+        if file.startswith("Cloud_pose"):
             try:
                 # Extract number between "Cloud_pose" and ".ply"
-                number_str = file[len("Cloud_pose"):-4]  # Remove prefix and suffix
+                number_str = file[len("Cloud_pose")]  # Remove prefix and suffix
                 pose_num = int(number_str)
                 existing_poses.append(pose_num)
             except ValueError:
