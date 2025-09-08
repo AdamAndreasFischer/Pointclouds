@@ -8,7 +8,32 @@ save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
     os.mkdir(save_points_dir)
 
-def main(dir_path, n_clouds):
+
+def save_point_cloud_to_ply(filename, point_cloud_frame, point_cloud_filter):
+    try:
+        assert point_cloud_frame.get_format() == OBFormat.RGB_POINT
+    except Exception as e:
+        print("Pointcloud is not xyzrgb")
+        return False, None
+    
+    points = point_cloud_filter.calculate(point_cloud_frame)
+    
+
+    pcd = o3d.geometry.PointCloud()
+
+    pcd.points = o3d.utility.Vector3dVector(points[:, :3])
+    colors = points[:, 3:6]
+    if numpy.max(colors) > 1.0:
+        colors = colors / 255.0
+
+    
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+
+    o3d.io.write_point_cloud(filename, pcd, write_ascii=True)
+    return True, pcd
+
+
+def main(dir_path, n_clouds, n_images):
     # 1.Create a pipeline with default device.
     pipeline = Pipeline()
     # 2.Create config.
@@ -19,10 +44,6 @@ def main(dir_path, n_clouds):
 
     filter_list = depth_sensor.get_recommended_filters()
 
-    for i in range(len(filter_list)):
-        filter = filter_list[i]
-        if filter:
-            print(f"filter name {filter.get_name()}")
   
         
     # 3.Enable color profile
@@ -63,62 +84,65 @@ def main(dir_path, n_clouds):
     pcds = []
     while True:
         # 9.Wait for frames
-        frames = pipeline.wait_for_frames(100)
+        #Remove the first frame to reduce shutter opening artefacts
+        for b in range(2):
+            frames = pipeline.wait_for_frames(100)
         
         if frames is None:
+            print("No frames received")
             continue
      
         # 10.Filter the data
         align_frame = align_filter.process(frames)
         if not align_frame:
             continue
-        print("Depth frame functions")
-        depth_data = frames.get_depth_frame()
-        print(dir(depth_data))
-        print(depth_data.__getstate__())
-        print(dir(frames))
+       
         #print(dir(point_frame))
-
-     
-        #noise_removed = edge_noise_filter.process(align_frame)
+        noise_removed = edge_noise_filter.process(align_frame)
 
         #spatial_filtered = spatial_filter.process(noise_removed)
 
         # 11.Apply the point cloud filter
-        point_cloud_frame = point_cloud_filter.process(align_frame)
-        points = point_cloud_filter.calculate(point_cloud_frame)
+        point_cloud_frame = point_cloud_filter.process(noise_removed)
+        try:
+            points = point_cloud_filter.calculate(point_cloud_frame)
+        except RuntimeWarning as w:
+            print("Pointcloud calculation warning:", w)
+            i-=1
+            continue
+
         num_points = points.shape[0]
         if num_points< 600000: 
             i=-1
             continue
-        print(f"Cloud contains {num_points} points")
-    
+        
         # 12.save point cloud
         
-        print("Saving pointcloud...")
-        save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"), point_cloud_frame, )
+        
+        success, pcd = save_point_cloud_to_ply(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"), point_cloud_frame, point_cloud_filter)
 
-        print(f"Saving {os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply")}")
-
-        pcd = o3d.io.read_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"))
-        o3d.io.write_point_cloud(os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply"), pcd, write_ascii = True )
-        pcd_pts = numpy.array(pcd.points)
-        if pcd_pts.shape[0] <600000:
-            i-=1
+        if success:
+            print(f"Successfully saved {os.path.join(dir_path, f"Cloud_pose{n_clouds}/cloud{i}.ply")}")
         else:
-            pcds.append(pcd)
+            print("Failed to save pointcloud")
+            i -=1
+            continue
 
-        if i==100:
+        pcds.append(pcd)
+
+        if i==n_images:
             break
         i+=1
+      
     o3d.visualization.draw_geometries(pcds)
     # 13.Stop the pipeline
     pipeline.stop()
 
 
 if __name__ == "__main__":
-    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/multi_cloud_test"
+    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
     files = os.listdir(dir_path)
+    n_images = 50
     
     # Extract existing pose numbers from filenames
     existing_poses = []
@@ -142,4 +166,4 @@ if __name__ == "__main__":
     print(f"Existing poses: {sorted(existing_poses)}")
     print(f"Next pose number: {n_clouds}")
     
-    main(dir_path, n_clouds)
+    main(dir_path, n_clouds, n_images)

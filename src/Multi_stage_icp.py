@@ -166,23 +166,23 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
     target.orient_normals_towards_camera_location(np.array([0, 0, 0]))
 
     ## 5. Medium alignment 
-    #medium_result = o3d.pipelines.registration.registration_icp(
-    #    source_down, target_down, voxel_size * 4, coarse_result.transformation,
-    #    o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-    #    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
-    #
-    #print(f"Medium alignment fitness: {medium_result.fitness}")
+    medium_result = o3d.pipelines.registration.registration_icp(
+        source_down, target_down, voxel_size * 4, coarse_result.transformation,
+        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
+    
+    print(f"Medium alignment fitness: {medium_result.fitness}")
     #
     # 6. Fine alignment on original resolution
     fine_result = o3d.pipelines.registration.registration_icp(
-        source, target, voxel_size*2, coarse_result.transformation,
+        source, target, voxel_size*1, medium_result.transformation,
         o3d.pipelines.registration.TransformationEstimationPointToPlane(),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
     
     print(f"Fine alignment fitness: {fine_result.fitness}")
 
     result_colored = o3d.pipelines.registration.registration_colored_icp(
-        source, target, voxel_size, fine_result.transformation,
+        source, target, voxel_size/2, fine_result.transformation,
         o3d.pipelines.registration.TransformationEstimationForColoredICP(),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
     
@@ -202,7 +202,7 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
 
 def main():
 
-    path = "/home/adamfi/Codes/Pointclouds/pointclouds/multi_cloud_test"
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
@@ -267,14 +267,18 @@ def main():
 
         refined_pcs.append(source_down)
 
-
+    
     for i, pose in enumerate(resulting_transforms):
-        t = pose[3:,3]
+        
+        t = pose[:3,3]
+        
         R_mat = pose[:3,:3]
-        quat = R.from_matrix(R_mat).as_quat()
+        quat = R.from_matrix(R_mat).as_quat(scalar_first = False)
+        
         coord = np.concatenate([t, quat])
+        
         np.save(f"{path}/pose_{i+1}_transformed.npy", coord)
-
+    #o3d.visualization.draw_geometries(refined_pcs)
    
     #np.savez("home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/full_room3_transforms.npz", full_save = True,  transforms=resulting_transforms, init_transforms=init_transforms)
 

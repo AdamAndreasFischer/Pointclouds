@@ -9,12 +9,14 @@ pointcloud = o3d.io.read_point_cloud("C:/Users/adamf/Codes/Laptopcodes/Mocap_pro
 print(pointcloud)
 print(o3d.__version__)
 
-height_matrix = plt.imread("/home/adamfi/Codes/Pointclouds/RGBD-data/depth_0.jpg")
+height_matrix = np.loadtxt("/home/adamfi/Codes/Pointclouds/RGBD-data/raster_matrix.txt")
+
+
 height_matrix = np.expand_dims(height_matrix, -1)
 print(height_matrix.shape)
 print(height_matrix)
 
-im = plt.imread("/home/adamfi/Codes/Pointclouds/RGBD-data/rgb_0.jpg")
+im = plt.imread("/home/adamfi/Codes/Pointclouds/RGBD-data/image.png")
 print(im.shape)
 
 rgb_d = np.concatenate((im, height_matrix), axis=-1)
@@ -26,5 +28,5 @@ plt.title('RGB image')
 plt.imshow(im)
 plt.subplot(1, 2, 2)
 plt.title('Depth image')
-plt.imshow(height_matrix)
+plt.imshow(height_matrix, cmap='viridis')
 plt.show()

@@ -82,7 +82,7 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Try the full path first
-        dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/multi_cloud_test"
+        dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
 
         files = os.listdir(dir_path)
         # Extract existing pose numbers from filenames
