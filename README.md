@@ -1,4 +1,4 @@
-# Point cloud capture and preprocessing 
+# Point cloud capture and registration
 
 ## Requirements 
 
