@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 
 
 def detect_planar_patch(pcd):
-    """Detects planes in pointcloud. Works quite well"""
+    """Detects planes in pointcloud. 
+    
+    pcd: [pcd] source pointcloud where planes should be detected and saves the one with the largest area. Used for e.g floor detection"""
     
     pcd.estimate_normals(o3d.geometry.KDTreeSearchParamKNN(knn=30 ))
 
@@ -131,6 +133,8 @@ def expand_floor_mesh(floor_mesh, z_thickness=0.1, visualize=True):
         o3d.visualization.draw_geometries([original_mesh, expanded_mesh])
     expanded_mesh.paint_uniform_color([0,0,0])
     return expanded_mesh
+
+
 
 cloud = o3d.io.read_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/ICP_reged.ply")
 plane = o3d.io.read_triangle_mesh("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/floor_plane.obj")

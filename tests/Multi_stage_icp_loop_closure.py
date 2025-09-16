@@ -15,7 +15,7 @@ os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
 NUM_THREADS = max(1, multiprocessing.cpu_count())
 
 def load_coord(path):
-
+    print("Coord func")
     print(os.listdir(path))
     paths = [path for path in os.listdir(path) if path.endswith(".npy") and not "transformed" in path]
     paths.sort()
@@ -37,7 +37,6 @@ def read_clouds(path):
     return clouds
 
 def read_multi_clouds(path):
-    """Read one pointcloud from each folder containing multiple pointclouds"""
     folders = [f.path for f in os.scandir(path) if f.is_dir() and f.name.startswith("Cloud_pose")]
     folders.sort()
     folders = sorted(folders, key=len)
@@ -68,19 +67,12 @@ def pose_to_transform_matrix(pose):
     return transform
 
 def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remove_outliers=True):
-    """Enhanced preprocessing for better registration results
-    Args
-    cloud: [pcd] Pointcloud to be preprocessed
-    voxel_size: [float] size of voxel, i.e how fine the resolution for the allignment is
-    max_nn: [float] The ammount of neighbouring voxels taken into account in denoising
-    std_ration: [float] Deviation of points in denoising
-    """
-
-    # Downsample
+    """Enhanced preprocessing for better registration results"""
+    
+    # 1. Voxel downsampling
     cloud_down = cloud.voxel_down_sample(voxel_size//2)
     #cloud_down = cloud
-    
-    # Outlier removal
+    # 2. Outlier removal (statistical)
     if remove_outliers:
         cloud_filtered, ind = cloud_down.remove_statistical_outlier(
             nb_neighbors=max_nn, std_ratio=std_ratio)
@@ -110,12 +102,15 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
         
     print(f"Combined indices: type = {type(combined_indices)}, shape = {combined_indices.shape}, length = {len(combined_indices)}")
     
-    # Estimate normals with consistent orientation
+    # 3. Estimate normals with consistent orientation
     radius_normal = voxel_size * 2
     cloud_filtered_2.estimate_normals(
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=max_nn))
    # cloud_filtered_2.orient_normals_towards_camera_location(np.array([0, 0, 0]))
     
+    # 4. Optional: Smooth the point cloud
+    # This uses a simple moving average approach
+    # You might need to implement this as Open3D doesn't have it built-in
     
     return cloud_filtered_2, combined_indices, cloud_down
 
@@ -129,30 +124,68 @@ def denoise_point_cloud(cloud, voxel_size, max_nn, std_ratio):
 
     return cloud_filtered_2
 
-def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration = 2.0, initial_pose=None):
-    """A multi-stage registration approach with progressively refined alignment
-    Args:
-    source: [pcd] the pointcloud that is supposed to be alligned with the target
-    target: [pcd] Target for allignment of source
-    voxel_size: [float] size of voxel, i.e how fine the resolution for the allignment is
-    max_nn: [float] The ammount of neighbouring voxels taken into account in denoising
-    std_ration: [float] Deviation of points in denoising
-    initial_pose: [np.array] If the clouds are intially alligned, should be identity matrix. Otherwise a estimated transform from source to target. 
-    """
+def global_registration(source_down, target_down, voxel_size, max_nn=30, std_ratio=2.0):
+    """Global registration using FPFH features and RANSAC"""
+    
+    
+    print(f"Source downsampled points: {len(source_down.points)}, Target downsampled points: {len(target_down.points)}")
+    
+    radius_feature = voxel_size * 5
+    source_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+        source_down,
+        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=max_nn))
+    target_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+        target_down,
+        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=max_nn))
+    
+    print("FPFH features computed")
+    
+    distance_threshold = voxel_size * 5
+    result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+        source_down, target_down, source_fpfh, target_fpfh, True,
+        distance_threshold,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(False), 4, [
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+            o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(distance_threshold)
+        ], o3d.pipelines.registration.RANSACConvergenceCriteria(4000000, 500))
+    
+    print(f"RANSAC fitness: {result.fitness}, inlier RMSE: {result.inlier_rmse}")
+    
+    return result
+
+def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration = 2.0, initial_pose=None, save=True, glob_reg=False):
+    """A multi-stage registration approach with progressively refined alignment"""
     
     print("Initial allginment")
     #draw_geometries([source, target])
-    originals = [copy.deepcopy(source), copy.deepcopy(target)]
-    source_down = source
+    #originals = [copy.deepcopy(source), copy.deepcopy(target)]
+    #source_down,_,_ = preprocess_for_registration(source, voxel_size, max_nn=max_nn, std_ratio=std_ration)
+    #target_down,_,_ = preprocess_for_registration(target, voxel_size, max_nn=max_nn, std_ratio=std_ration)
+    source_down = source #If prefiltered and downsampled
     target_down = target
-    
-    radius_normal = voxel_size * 2
 
+    radius_normal = voxel_size * 2
+    # 3. Initial alignment - use pose if available, otherwise identity
     init_transform = np.eye(4) if initial_pose is None else initial_pose
 
     initial_evaluation = o3d.pipelines.registration.evaluate_registration(
         source_down, target_down, voxel_size*2, init_transform)
     print(f"Initial alignment fitness: {initial_evaluation.fitness:.4f}")
+
+    #if glob_reg and initial_evaluation.fitness < 0.1:
+    #    ransac_result = global_registration(source_down, target_down, voxel_size, max_nn=max_nn, std_ratio=std_ration)
+    #    if ransac_result.fitness > initial_evaluation.fitness:
+    #        print("RANSAC improved initial alignment")
+    #        init_transform = ransac_result.transformation
+    #        ransac_copy = copy.deepcopy(source_down)
+    #        ransac_copy.transform(ransac_result.transformation)
+    #        ransac_result2 = global_registration(ransac_copy, target_down, voxel_size/2, max_nn=max_nn, std_ratio=std_ration)
+    #        if ransac_result2.fitness > ransac_result.fitness:
+    #            print("Second RANSAC improved alignment further")
+    #            init_transform = ransac_result2.transformation@ransac_result.transformation
+#
+    
+
     
     # 4. Coarse alignment with larger threshold
     coarse_result = o3d.pipelines.registration.registration_icp(
@@ -200,29 +233,39 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
     
     print(f"Colored alignment fitness: {result_colored.fitness}")
+
+    information_icp = o3d.pipelines.registration.get_information_matrix_from_point_clouds(
+        source, target, voxel_size/2,
+        result_colored.transformation)
+
+#
+    #final_cloud = o3d.geometry.PointCloud()
+#
+    #final_cloud += source_copy
+    #final_cloud += target_copy
+    #if save:
+    #    o3d.io.write_point_cloud("/home/adamfi/Codes/Mocap_process/Alligned_clouds/ICP_reged.ply",final_cloud, write_ascii = True )
     
-    return fine_result, source_down
+    
+    return fine_result, source_down, information_icp
 
 
 def main():
-    """
-    Multi stage ICP for local registration of pointclouds. In order to register pointclouds, save them in a folder corresponding to the pose it belongs to, e.g
-    Scene1 -> Cloud_pose1 -> pointclouds
-    and for each pose, save a numpy 6 dof pose on form [x y z qx qy qz qw].
 
-    Transform coords is specifically for Orbbec cameras to transform the pointcloud from the cameras coordinate system into the specified coordinate system from Motive i.e different depending on how you defined 
-    the ridgid bodies. 
-    """
-    path = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
+    path = "/home/adamfi/Codes/Pointclouds/pointclouds/room_obstacles"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
     std_ratio = 1.5
-    
+    global_registration_required = False #Failed test
+
     original_clouds = read_multi_clouds(path)
     #original_clouds = read_clouds(os.path.join(path, "Cloud_pose2"))
     print(f"Loaded {len(original_clouds)} point clouds and {len(poses)} poses")
-  
+    #source = original_clouds[1]
+    #target = original_clouds[0]
+    #poses = np.load(os.path.join(path, "pose_2.npy"))
+    #poses = np.repeat(poses[np.newaxis, ...], len(original_clouds), axis=0)
     transform_coords = np.array([
         [0, 0, 1, 0],
         [1, 0, 0, 0],
@@ -233,20 +276,20 @@ def main():
     
     init_transforms = []
     initial_pcs = []
-    
-    #initial allignment of pointclouds
+   
     for pose, pcd_original in zip(poses, original_clouds):
         pcd = copy.deepcopy(pcd_original)
         
         t = pose[:3]
         q = pose[3:]
 
-        q_norm = np.linalg.norm(q) # Normalize quaternion
+        q_norm = np.linalg.norm(q) #Normalize quaternion
         q = q/q_norm
         R_mat = R.from_quat(q).as_matrix()
         T = np.eye(4)
         T[:3, :3] = R_mat
         T[:3, 3] = t*1000  # Convert pose to mm as pointclouds are measured in mm
+        #print(T)
         
         T_total = T@transform_coords
         
@@ -254,42 +297,96 @@ def main():
         pcd.transform(T_total)
         initial_pcs.append(pcd)
       
+        #if i >0:
+        #    print(f"Cloud {i} and {i+1}")
+        #    o3d.visualization.draw_geometries([initial_pcs[i], initial_pcs[i-1]])
+        #i+=1
+    
+
+
     o3d.visualization.draw_geometries(initial_pcs)
+    start_cloud = copy.deepcopy(original_clouds[0])
 
-    # Down sample and denoise clouds
-    preprocessed_pcds = []
-    for pcd in initial_pcs:
-        pcd_down, _,_ = preprocess_for_registration(pcd, voxel_size, max_nn, std_ratio)
-        preprocessed_pcds.append(pcd_down)
+    
+    pcds = copy.deepcopy(initial_pcs)
+    for i,pcd in enumerate(pcds):
+        pcd,_,_ = preprocess_for_registration(pcd, voxel_size, max_nn, std_ratio)
+        pcds[i] = pcd
 
-    refined_pcs = [copy.deepcopy(preprocessed_pcds[0])]
-    resulting_transforms = [copy.deepcopy(init_transforms[0])]
+    
 
-    for i in range(1,len(initial_pcs)):
-        print(f"Refining cloud {i+1}...")
-        source = copy.deepcopy(preprocessed_pcds[i])
-        target = copy.deepcopy(refined_pcs[-1])
+    #TODO: Downsample and denoise clouds before reqistration
 
-        result, source_down = multi_stage_registration(source, target, voxel_size, max_nn, std_ratio)
-        resulting_transforms.append(result.transformation@init_transforms[i])
+    pose_graph = o3d.pipelines.registration.PoseGraph()
+    odometry = np.eye(4)
+    pose_graph.nodes.append(o3d.pipelines.registration.PoseGraphNode(odometry))
+    n_pcds = len(pcds)
+    for source_id in range(n_pcds):
+        for target_id in range(source_id + 1, n_pcds):
+            result_icp,_ ,information_icp = multi_stage_registration(pcds[source_id], pcds[target_id], voxel_size, max_nn, std_ratio)
+            transformation_icp = result_icp.transformation
+            if target_id == source_id+1:
+                odometry = np.dot(transformation_icp, odometry)
 
-        source_down.transform(result.transformation)
-
-        refined_pcs.append(source_down)
-
-    # Save resulting pose
-    for i, pose in enumerate(resulting_transforms):
+                pose_graph.nodes.append(
+                    o3d.pipelines.registration.PoseGraphNode(
+                        np.linalg.inv(odometry)))
+                
+                pose_graph.edges.append(
+                    o3d.pipelines.registration.PoseGraphEdge(source_id,
+                                                             target_id,
+                                                             transformation_icp,
+                                                             information_icp,
+                                                             uncertain=False))
+            else:
+                pose_graph.edges.append(
+                    o3d.pipelines.registration.PoseGraphEdge(source_id,
+                                                             target_id,
+                                                             transformation_icp,
+                                                             information_icp,
+                                                             uncertain=True))
+    
+    print("Optimizing PoseGraph ...")
+    option = o3d.pipelines.registration.GlobalOptimizationOption(
+        max_correspondence_distance=voxel_size/2,
+        edge_prune_threshold=0.25,
+        reference_node=0)
+    with o3d.utility.VerbosityContextManager(
+            o3d.utility.VerbosityLevel.Debug) as cm:
+        o3d.pipelines.registration.global_optimization(
+            pose_graph,
+            o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+            o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+            option)
+        
+    
+    final_pcds = []
+    final_transforms = []
+    for cloud_id,cloud in enumerate(original_clouds):
+        transform = pose_graph.nodes[cloud_id].pose
+        cloud.transform(transform@init_transforms[cloud_id])
+        final_pcds.append(cloud)
+        final_transforms.append(transform@init_transforms[cloud_id])
+    o3d.visualization.draw_geometries(final_pcds)
+    
+    
+    for i, pose in enumerate(final_transforms):
+        
         t = pose[:3,3]
+        
         R_mat = pose[:3,:3]
         quat = R.from_matrix(R_mat).as_quat(scalar_first = False)
         
         coord = np.concatenate([t, quat])
         
         np.save(f"{path}/pose_{i+1}_transformed.npy", coord)
+    #o3d.visualization.draw_geometries(refined_pcs)
    
-    # Save registered pointclouds
+    #np.savez("home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/full_room3_transforms.npz", full_save = True,  transforms=resulting_transforms, init_transforms=init_transforms)
+
+
     final_cloud = o3d.geometry.PointCloud()
-    for cloud in refined_pcs:
+    for cloud in final_pcds:
         final_cloud += cloud
 
     o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/room_obstacles.ply",final_cloud, write_ascii = True )

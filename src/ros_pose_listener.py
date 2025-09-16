@@ -61,6 +61,7 @@ def save_pose_to_file(pose, filename):
             return False
 
 def main():
+    """Listens for poses published to the topic specified. Needs rosbridge running on the rosmaster with port 9090"""
     try:
         # ROS connection setup
         print("Connecting to ROS bridge server...")

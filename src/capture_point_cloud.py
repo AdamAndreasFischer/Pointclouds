@@ -33,7 +33,7 @@ def save_point_cloud_to_ply(filename, point_cloud_frame, point_cloud_filter):
     return True, pcd
 
 
-def main(dir_path, n_clouds, n_images):
+def main(dir_path, n_clouds, n_images, min_points):
     # 1.Create a pipeline with default device.
     pipeline = Pipeline()
     # 2.Create config.
@@ -112,7 +112,7 @@ def main(dir_path, n_clouds, n_images):
             continue
 
         num_points = points.shape[0]
-        if num_points< 600000: 
+        if num_points< min_points:#600000: 
             i=-1
             continue
         
@@ -140,9 +140,14 @@ def main(dir_path, n_clouds, n_images):
 
 
 if __name__ == "__main__":
-    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
+    """
+    Script to capture and save pointclouds using Orbbec cameras. n_images decides how many pcds should be saved each time. Filters out pcds with to few points
+    and saves them as a PLY in specified directory
+    """
+    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
     files = os.listdir(dir_path)
     n_images = 50
+    min_points=600000
     
     # Extract existing pose numbers from filenames
     existing_poses = []
@@ -166,4 +171,4 @@ if __name__ == "__main__":
     print(f"Existing poses: {sorted(existing_poses)}")
     print(f"Next pose number: {n_clouds}")
     
-    main(dir_path, n_clouds, n_images)
+    main(dir_path, n_clouds, n_images, min_points)
