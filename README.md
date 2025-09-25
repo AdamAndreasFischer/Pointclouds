@@ -11,7 +11,7 @@ scipy
 tqdm
 ```
 
-# Usage
+
 ## Capture pointclouds and poses
 
 ### Capture Point clouds
@@ -26,5 +26,5 @@ Before registering the pointclouds with the captured poses, it is important to c
 
 ### Register pointclouds
 
-`Multi_stage_icp.py` is used to register the pointclouds from the initial positions captured by the mocap system. The script takes the clouds and poses and registers them with increasingly finer precision. When the registration is done, a preview of the registered clouds is shown and the registered poses and the alligned pointclouds are saved. 
+`Multi_stage_icp.py` is used to register the pointclouds from the initial positions captured by the mocap system. The script takes the clouds and poses and registers them with increasingly finer precision. When the registration is done, a preview of the registered clouds is shown and the registered poses and the alligned pointclouds are saved. **Note** that the current script expects the pointclouds to be in milimeters instead of meters. Check the camera for information on this.
 
