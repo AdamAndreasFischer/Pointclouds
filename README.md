@@ -17,6 +17,8 @@ tqdm
 ### Capture Point clouds
 In order to capture pointclouds, the `capture_point_clouds.py` script must be modified to fit the camera in use. The script captures as many clouds as specified and saves them in a Cloud_poseX folder in the specified directory. The folders number is based on the amount of folders already in the directory. The code filters out clouds with points less than a set threshold, depends on your camera.
 
+Before using, create a folder for the pointclouds, otherwise it will flood the main directory with clouds.
+
 ### Capture poses
 In order to capture poses with `ros_pose_listener.py`, a rosmaster with `natnet_for_ros` and `rosbridge` must be setup to recieve and publish poses of the cameras from the motive software. The pose is then save in the specified directory named pose_x.npy based on the ammount of poses already in the directory
 
