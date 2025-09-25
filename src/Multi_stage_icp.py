@@ -207,8 +207,8 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
 def main():
     """
     Multi stage ICP for local registration of pointclouds. In order to register pointclouds, save them in a folder corresponding to the pose it belongs to, e.g
-    Scene1 -> Cloud_pose1 -> pointclouds
-    and for each pose, save a numpy 6 dof pose on form [x y z qx qy qz qw].
+    pointclouds -> Cloud_pose1 -> cloudX.ply
+    and for each pose, save a numpy array 6 dof pose on form [x y z qx qy qz qw].
 
     Transform coords is specifically for Orbbec cameras to transform the pointcloud from the cameras coordinate system into the specified coordinate system from Motive i.e different depending on how you defined 
     the ridgid bodies. 
@@ -218,6 +218,7 @@ def main():
     voxel_size = 40
     max_nn = 40
     std_ratio = 1.5
+    milimeters = True
     
     original_clouds = read_multi_clouds(path)
     #original_clouds = read_clouds(os.path.join(path, "Cloud_pose2"))
@@ -246,7 +247,7 @@ def main():
         R_mat = R.from_quat(q).as_matrix()
         T = np.eye(4)
         T[:3, :3] = R_mat
-        T[:3, 3] = t*1000  # Convert pose to mm as pointclouds are measured in mm
+        T[:3, 3] = t * 1000 if milimeters else t  # Convert pose to mm as pointclouds are measured in mm
         
         T_total = T@transform_coords
         
