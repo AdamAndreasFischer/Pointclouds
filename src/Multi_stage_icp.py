@@ -50,6 +50,20 @@ def read_multi_clouds(path):
         cloud_list.append(pcd)
     return cloud_list
 
+def filter_invalid_points(cloud, min_distance=150.0, max_distance=12000.0):
+    """Remove invalid near-zero and very far points (distance in mm)."""
+    points = np.asarray(cloud.points)
+    if len(points) == 0:
+        return cloud
+
+    distances = np.linalg.norm(points, axis=1)
+    valid_idx = np.where((distances >= min_distance) & (distances <= max_distance))[0]
+
+    if len(valid_idx) == 0:
+        return cloud
+
+    return cloud.select_by_index(valid_idx)
+
 def pose_to_transform_matrix(pose):
     """
     Convert pose [x, y, z, qx, qy, qz, qw] to 4x4 transformation matrix
@@ -76,8 +90,10 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
     std_ration: [float] Deviation of points in denoising
     """
 
+    cloud = filter_invalid_points(cloud)
+
     # Downsample
-    cloud_down = cloud.voxel_down_sample(voxel_size//2)
+    cloud_down = cloud.voxel_down_sample(max(voxel_size / 2.0, 5.0))
     #cloud_down = cloud
     
     # Outlier removal
@@ -89,7 +105,8 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
         cloud_filtered = cloud_down
         ind = np.arange(len(cloud_down.points))  # All points kept
 
-    cloud_filtered_2, ind_r = cloud_filtered.remove_radius_outlier(nb_points=max_nn//2, radius=voxel_size*3.0)
+    cloud_filtered_2, ind_r = cloud_filtered.remove_radius_outlier(
+        nb_points=max(max_nn // 2, 12), radius=voxel_size * 2.5)
     print(f"Radius outlier removal: type(ind_r) = {type(ind_r)}, shape = {np.array(ind_r).shape}")
     
     # Combine the indices: first apply statistical outlier indices, then radius outlier indices
@@ -159,6 +176,14 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
         source_down, target_down, voxel_size *6,  init_transform,
         o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=50))
+
+    coarse_result_fallback = o3d.pipelines.registration.registration_icp(
+        source_down, target_down, voxel_size * 10, init_transform,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=80))
+
+    if coarse_result_fallback.fitness > coarse_result.fitness:
+        coarse_result = coarse_result_fallback
     
     source_course = copy.deepcopy(source)
     #source_course.transform(coarse_result.transformation)
@@ -213,7 +238,7 @@ def main():
     Transform coords is specifically for Orbbec cameras to transform the pointcloud from the cameras coordinate system into the specified coordinate system from Motive i.e different depending on how you defined 
     the ridgid bodies. 
     """
-    path = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
+    path = "/home/adamfi/codes/Pointclouds/pointclouds/test"
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
@@ -226,14 +251,28 @@ def main():
   
     transform_coords = np.array([
         [0, 0, 1, 0],
+        [0, 1, 0, 0],
+        [-1, 0, 0, 0],
+        [0, 0, 0, 1]
+    ])
+
+    transform_2 = np.array([
         [1, 0, 0, 0],
+        [0, 0, -1, 0],
         [0, 1, 0, 0],
         [0, 0, 0, 1]
-    ])    
+    ])
+    transform_coords = transform_coords @ transform_2
+    print(transform_coords)
+    #rotate_x_90 = np.eye(4)
+    #rotate_x_90[:3, :3] = R.from_euler('x', 90, degrees=True).as_matrix()
+
+    #transform_coords = transform_coords @ rotate_x_90
 
     
     init_transforms = []
     initial_pcs = []
+    pose_frames = []
     
     #initial allignment of pointclouds
     for pose, pcd_original in zip(poses, original_clouds):
@@ -251,11 +290,17 @@ def main():
         
         T_total = T@transform_coords
         
+        
         init_transforms.append(T_total)
         pcd.transform(T_total)
         initial_pcs.append(pcd)
+
+        frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=150.0)
+        frame.transform(T_total)
+        pose_frames.append(frame)
       
-    o3d.visualization.draw_geometries(initial_pcs)
+    world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=250.0)
+    o3d.visualization.draw_geometries(initial_pcs + pose_frames + [world_frame])
 
     # Down sample and denoise clouds
     preprocessed_pcds = []
@@ -269,9 +314,15 @@ def main():
     for i in range(1,len(initial_pcs)):
         print(f"Refining cloud {i+1}...")
         source = copy.deepcopy(preprocessed_pcds[i])
-        target = copy.deepcopy(refined_pcs[-1])
+        target = o3d.geometry.PointCloud()
+        for cloud in refined_pcs:
+            target += cloud
 
-        result, source_down = multi_stage_registration(source, target, voxel_size, max_nn, std_ratio)
+        target = target.voxel_down_sample(max(voxel_size / 2.0, 5.0))
+
+        result, source_down = multi_stage_registration(
+            source, target, voxel_size, max_nn, std_ratio, initial_pose=np.eye(4)
+        )
         resulting_transforms.append(result.transformation@init_transforms[i])
 
         source_down.transform(result.transformation)
@@ -293,7 +344,7 @@ def main():
     for cloud in refined_pcs:
         final_cloud += cloud
 
-    o3d.io.write_point_cloud("/home/adamfi/Codes/Pointclouds/pointclouds/Alligned_clouds/room_obstacles.ply",final_cloud, write_ascii = True )
+    o3d.io.write_point_cloud("/home/adamfi/codes/Pointclouds/results/initial_test.ply",final_cloud, write_ascii = True )
     draw_geometries([final_cloud])
 
 
