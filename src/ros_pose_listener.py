@@ -3,6 +3,21 @@ import time
 import numpy as np
 from datetime import datetime
 import os
+import argparse
+
+
+DEFAULT_ROOT_DIR = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Listen for ROS pose and save it to disk")
+    parser.add_argument(
+        "--root_dir",
+        type=str,
+        default=None,
+        help=f"Directory where pose_*.npy is saved. If omitted, uses: {DEFAULT_ROOT_DIR}",
+    )
+    return parser.parse_args()
 
 # Global variable to store latest pose
 latest_pose = None
@@ -62,6 +77,7 @@ def save_pose_to_file(pose, filename):
 
 def main():
     """Listens for poses published to the topic specified. Needs rosbridge running on the rosmaster with port 9090"""
+    args = parse_args()
     try:
         # ROS connection setup
         print("Connecting to ROS bridge server...")
@@ -82,8 +98,8 @@ def main():
         # Save the pose automatically
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Try the full path first
-        dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/Multi_cloud_more_poses"
+        # Resolve output directory (CLI arg overrides hardcoded default)
+        dir_path = args.root_dir if args.root_dir else DEFAULT_ROOT_DIR
 
         files = os.listdir(dir_path)
         # Extract existing pose numbers from filenames

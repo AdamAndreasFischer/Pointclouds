@@ -3,10 +3,29 @@ import os
 import open3d as o3d
 import copy
 import numpy
+import argparse
+
+
+DEFAULT_ROOT_DIR = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
 
 save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
     os.mkdir(save_points_dir)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Capture and save Orbbec point clouds")
+    parser.add_argument(
+        "--root_dir",
+        type=str,
+        default=None,
+        help=f"Directory where Cloud_pose* folders are saved. If omitted, uses: {DEFAULT_ROOT_DIR}",
+    )
+    parser.add_argument("--num_pcds", 
+                        type=int, 
+                        default=5,
+                        help=f"Number of pcd to capture from the pose. Default {5}")
+    return parser.parse_args()
 
 
 def save_point_cloud_to_ply(filename, point_cloud_frame, point_cloud_filter):
@@ -144,9 +163,11 @@ if __name__ == "__main__":
     Script to capture and save pointclouds using Orbbec cameras. n_images decides how many pcds should be saved each time. Filters out pcds with to few points
     and saves them as a PLY in specified directory
     """
-    dir_path = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
+    args = parse_args()
+    dir_path = args.root_dir if args.root_dir else DEFAULT_ROOT_DIR
+    os.makedirs(dir_path, exist_ok=True)
     files = os.listdir(dir_path)
-    n_images = 50
+    n_images = args.num_pcds
     min_points=600000
     
     # Extract existing pose numbers from filenames

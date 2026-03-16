@@ -2,6 +2,7 @@ import open3d as o3d
 from open3d.visualization import draw_geometries
 import numpy as np
 import os
+import argparse
 from scipy.spatial.transform import Rotation as R
 import copy
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -16,6 +17,30 @@ os.environ["PYOPENGL_PLATFORM"] = "glx"
 os.environ["XDG_SESSION_TYPE"] = "x11"
 
 NUM_THREADS = max(1, multiprocessing.cpu_count())
+DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/test_less_pcd"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Multi-stage ICP for pose/cloud alignment")
+    parser.add_argument(
+        "--root_dir",
+        type=str,
+        default=None,
+        help=f"Root directory containing pose_*.npy and Cloud_pose*/cloud*.ply files. Outputs are also saved here. If omitted, uses: {DEFAULT_ROOT_DIR}",
+    )
+    parser.add_argument(
+        "--final_cloud_name",
+        type=str,
+        default="initial_test_5pcds.ply",
+        help="Filename for the merged registered point cloud.",
+    )
+    parser.add_argument(
+        "--pose_prefix",
+        type=str,
+        default="pose",
+        help="Prefix used for saved transformed and delta pose files.",
+    )
+    return parser.parse_args()
 
 def load_coord(path):
 
@@ -39,7 +64,7 @@ def read_clouds(path):
 
     return clouds
 
-def read_multi_clouds(path):
+def read_multi_clouds(path, num_clouds):
     """Read one pointcloud from each folder containing multiple pointclouds"""
     folders = [f.path for f in os.scandir(path) if f.is_dir() and f.name.startswith("Cloud_pose")]
     folders.sort()
@@ -48,6 +73,10 @@ def read_multi_clouds(path):
     for folder in folders:
         print(folder)
         clouds = [cloud for cloud in os.listdir(os.path.join(path,folder)) if cloud.endswith(".ply")]
+        if len(clouds) < num_clouds:
+            pass
+        else: 
+            clouds = clouds[:num_clouds]
         print(clouds)
         pcd = o3d.io.read_point_cloud(os.path.join(folder, clouds[1]))
         cloud_list.append(pcd)
@@ -241,14 +270,18 @@ def main():
     Transform coords is specifically for Orbbec cameras to transform the pointcloud from the cameras coordinate system into the specified coordinate system from Motive i.e different depending on how you defined 
     the ridgid bodies. 
     """
-    path = "/home/adamfi/codes/Pointclouds/pointclouds/test"
+    args = parse_args()
+    path = args.root_dir if args.root_dir else DEFAULT_ROOT_DIR
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"root_dir does not exist: {path}")
+
     poses = load_coord(path)
     voxel_size = 40
     max_nn = 40
-    std_ratio = 1.5
+    std_ratio = 2.0
     milimeters = True
-    
-    original_clouds = read_multi_clouds(path)
+    num_clouds = 5
+    original_clouds = read_multi_clouds(path, num_clouds)
     #original_clouds = read_clouds(os.path.join(path, "Cloud_pose2"))
     print(f"Loaded {len(original_clouds)} point clouds and {len(poses)} poses")
   
@@ -265,6 +298,13 @@ def main():
         [0, 1, 0, 0],
         [0, 0, 0, 1]
     ])
+
+    T_mean = np.array([
+    [0.99578279, -0.01414801, -0.09064469, 488.73271500],
+    [0.01053994,  0.99913766, -0.04016036, 656.41666033],
+    [0.09113471,  0.03903561,  0.99507321, -20.28939523],
+    [0.0,         0.0,         0.0,          1.0       ]
+    ], dtype=np.float64)
     transform_coords = transform_coords @ transform_2
     print(transform_coords)
     #rotate_x_90 = np.eye(4)
@@ -291,7 +331,7 @@ def main():
         T[:3, :3] = R_mat
         T[:3, 3] = t * 1000 if milimeters else t  # Convert pose to mm as pointclouds are measured in mm
         
-        T_total = T@transform_coords
+        T_total =T_mean@T@transform_coords
         
         
         init_transforms.append(T_total)
@@ -313,12 +353,13 @@ def main():
 
     refined_pcs = [copy.deepcopy(preprocessed_pcds[0])]
     resulting_transforms = [copy.deepcopy(init_transforms[0])]
+    registration_deltas = [np.eye(4)]  # How much each cloud was moved by registration
 
     for i in range(1,len(initial_pcs)):
         print(f"Refining cloud {i+1}...")
         source = copy.deepcopy(preprocessed_pcds[i])
         target = o3d.geometry.PointCloud()
-        for cloud in refined_pcs:
+        for cloud in refined_pcs: # Fit the next cloud to all previous clouds, instead of just the previous cloud. 
             target += cloud
 
         target = target.voxel_down_sample(max(voxel_size / 2.0, 5.0))
@@ -327,6 +368,7 @@ def main():
             source, target, voxel_size, max_nn, std_ratio, initial_pose=np.eye(4)
         )
         resulting_transforms.append(result.transformation@init_transforms[i])
+        registration_deltas.append(result.transformation)
 
         source_down.transform(result.transformation)
 
@@ -340,14 +382,35 @@ def main():
         
         coord = np.concatenate([t, quat])
         
-        np.save(f"{path}/pose_{i+1}_transformed.npy", coord)
+        np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_transformed.npy"), coord)
+
+    # Compute + save per-cloud registration motion (delta) from initial mocap pose to final refined pose
+    # delta_i maps: initial_aligned_cloud_i -> refined_cloud_i
+    # i.e. refined_pose_i = delta_i @ initial_pose_i
+    #registration_deltas_from_poses = []
+    #for i, (init_T, refined_T) in enumerate(zip(init_transforms, resulting_transforms)):
+    #    delta_T = refined_T @ np.linalg.inv(init_T)
+    #    registration_deltas_from_poses.append(delta_T)
+#
+    #    # Save full 4x4 matrix
+    #    np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_registration_delta.npy"), delta_T)
+#
+    #    # Save as [tx, ty, tz, qx, qy, qz, qw] for easy reuse
+    #    delta_t = delta_T[:3, 3]
+    #    delta_q = R.from_matrix(delta_T[:3, :3]).as_quat(scalar_first=False)
+    #    delta_pose = np.concatenate([delta_t, delta_q])
+    #    np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_registration_delta_pose.npy"), delta_pose)
+#
+    #    print(f"Cloud {i+1} registration delta:\n{delta_T}")
    
     # Save registered pointclouds
     final_cloud = o3d.geometry.PointCloud()
     for cloud in refined_pcs:
         final_cloud += cloud
 
-    o3d.io.write_point_cloud("/home/adamfi/codes/Pointclouds/results/initial_test.ply",final_cloud, write_ascii = True )
+    final_cloud_path = os.path.join(path, args.final_cloud_name)
+    o3d.io.write_point_cloud(final_cloud_path, final_cloud, write_ascii=True)
+    print(f"Saved merged cloud to: {final_cloud_path}")
     draw_geometries([final_cloud])
 
 
