@@ -10,7 +10,10 @@ import time
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
-
+os.environ["DISPLAY"] = ":1"
+os.environ["GDK_BACKEND"] = "x11"
+os.environ["PYOPENGL_PLATFORM"] = "glx"
+os.environ["XDG_SESSION_TYPE"] = "x11"
 
 NUM_THREADS = max(1, multiprocessing.cpu_count())
 
