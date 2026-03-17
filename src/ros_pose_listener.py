@@ -81,12 +81,12 @@ def main():
     try:
         # ROS connection setup
         print("Connecting to ROS bridge server...")
-        client = roslibpy.Ros(host='192.168.125.186', port=9090)
+        client = roslibpy.Ros(host='192.168.1.234', port=9090)
         client.run()
         print("Connected to ROS bridge server")
         
         # Subscribe to the pose topic
-        topic = roslibpy.Topic(client, '/natnet_ros/Camera2/pose', 'geometry_msgs/PoseStamped')
+        topic = roslibpy.Topic(client, '/natnet_ros/Orbbec_cam2/pose', 'geometry_msgs/PoseStamped')
         topic.subscribe(pose_callback)
         
         print("Waiting for the first pose data...")

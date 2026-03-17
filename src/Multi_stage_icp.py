@@ -178,6 +178,68 @@ def denoise_point_cloud(cloud, voxel_size, max_nn, std_ratio):
 
     return cloud_filtered_2
 
+def compute_scene_leveling_transform(
+    cloud,
+    distance_threshold=20.0,
+    ransac_n=3,
+    num_iterations=2000,
+    set_floor_to_z0=False,
+):
+    """Estimate one global transform that levels the dominant plane to world +Z."""
+    if len(cloud.points) < ransac_n:
+        print("Not enough points for plane fitting. Skipping leveling.")
+        return np.eye(4), None, 0
+
+    plane_model, inliers = cloud.segment_plane(
+        distance_threshold=distance_threshold,
+        ransac_n=ransac_n,
+        num_iterations=num_iterations,
+    )
+    a, b, c, d = plane_model
+    normal = np.array([a, b, c], dtype=np.float64)
+    n_norm = np.linalg.norm(normal)
+    if n_norm < 1e-12:
+        print("Degenerate floor normal. Skipping leveling.")
+        return np.eye(4), plane_model, len(inliers)
+
+    normal /= n_norm
+    if normal[2] < 0:
+        normal = -normal
+
+    target = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    axis = np.cross(normal, target)
+    axis_norm = np.linalg.norm(axis)
+    dot = float(np.clip(np.dot(normal, target), -1.0, 1.0))
+
+    if axis_norm < 1e-12:
+        R_align = np.eye(3)
+    else:
+        axis = axis / axis_norm
+        angle = np.arctan2(axis_norm, dot)
+        R_align = R.from_rotvec(axis * angle).as_matrix()
+
+    points = np.asarray(cloud.points)
+    centroid = points.mean(axis=0)
+
+    T_to_origin = np.eye(4)
+    T_to_origin[:3, 3] = -centroid
+    T_back = np.eye(4)
+    T_back[:3, 3] = centroid
+    T_rot = np.eye(4)
+    T_rot[:3, :3] = R_align
+
+    leveling_transform = T_back @ T_rot @ T_to_origin
+
+    if set_floor_to_z0 and len(inliers) > 0:
+        floor_pts = points[np.array(inliers, dtype=int)]
+        floor_pts_rot = (R_align @ (floor_pts - centroid).T).T + centroid
+        mean_floor_z = float(np.mean(floor_pts_rot[:, 2]))
+        Tz = np.eye(4)
+        Tz[2, 3] = -mean_floor_z
+        leveling_transform = Tz @ leveling_transform
+
+    return leveling_transform, plane_model, len(inliers)
+
 def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration = 2.0, initial_pose=None):
     """A multi-stage registration approach with progressively refined alignment
     Args:
@@ -279,6 +341,9 @@ def main():
     voxel_size = 40
     max_nn = 40
     std_ratio = 2.0
+    post_level_scene = True         # Apply one global leveling transform after ICP
+    set_floor_to_z0 = False         # Also shift floor vertically to z=0 after leveling
+    floor_ransac_threshold = 20.0   # mm
     milimeters = True
     num_clouds = 5
     original_clouds = read_multi_clouds(path, num_clouds)
@@ -374,6 +439,32 @@ def main():
 
         refined_pcs.append(source_down)
 
+    # Optional post-leveling step: preserve relative geometry while making floor horizontal
+    final_cloud = o3d.geometry.PointCloud()
+    for cloud in refined_pcs:
+        final_cloud += cloud
+
+    if post_level_scene:
+        cloud_for_plane = final_cloud.voxel_down_sample(max(voxel_size, 20.0))
+        leveling_transform, plane_model, num_inliers = compute_scene_leveling_transform(
+            cloud_for_plane,
+            distance_threshold=floor_ransac_threshold,
+            ransac_n=3,
+            num_iterations=2000,
+            set_floor_to_z0=set_floor_to_z0,
+        )
+        if plane_model is not None:
+            a, b, c, d = plane_model
+            print(
+                f"Leveling plane: {a:.5f}x + {b:.5f}y + {c:.5f}z + {d:.5f} = 0, "
+                f"inliers={num_inliers}"
+            )
+
+        for i in range(len(refined_pcs)):
+            refined_pcs[i].transform(leveling_transform)
+        for i in range(len(resulting_transforms)):
+            resulting_transforms[i] = leveling_transform @ resulting_transforms[i]
+
     # Save resulting pose
     for i, pose in enumerate(resulting_transforms):
         t = pose[:3,3]
@@ -383,6 +474,8 @@ def main():
         coord = np.concatenate([t, quat])
         
         np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_transformed.npy"), coord)
+        if post_level_scene:
+            np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_transformed_level.npy"), coord)
 
     # Compute + save per-cloud registration motion (delta) from initial mocap pose to final refined pose
     # delta_i maps: initial_aligned_cloud_i -> refined_cloud_i
@@ -411,7 +504,23 @@ def main():
     final_cloud_path = os.path.join(path, args.final_cloud_name)
     o3d.io.write_point_cloud(final_cloud_path, final_cloud, write_ascii=True)
     print(f"Saved merged cloud to: {final_cloud_path}")
-    draw_geometries([final_cloud])
+
+    # Visualize registered clouds and final pose frames
+    vis_clouds = []
+    cmap = plt.get_cmap("tab20")
+    for i, cloud in enumerate(refined_pcs):
+        c = copy.deepcopy(cloud)
+        c.paint_uniform_color(cmap(i % 20)[:3])
+        vis_clouds.append(c)
+
+    final_pose_frames = []
+    for pose in resulting_transforms:
+        frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=150.0)
+        frame.transform(pose)
+        final_pose_frames.append(frame)
+
+    world_frame_final = o3d.geometry.TriangleMesh.create_coordinate_frame(size=250.0)
+    draw_geometries(vis_clouds + final_pose_frames + [world_frame_final])
 
 
 if __name__=="__main__":
