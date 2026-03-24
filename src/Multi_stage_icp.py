@@ -17,7 +17,7 @@ os.environ["PYOPENGL_PLATFORM"] = "glx"
 os.environ["XDG_SESSION_TYPE"] = "x11"
 
 NUM_THREADS = max(1, multiprocessing.cpu_count())
-DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/test_less_pcd"
+DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test_cam3"
 
 
 def parse_args():
@@ -39,6 +39,11 @@ def parse_args():
         type=str,
         default="pose",
         help="Prefix used for saved transformed and delta pose files.",
+    )
+    parser.add_argument(
+        "--cam-number",
+        type= int,
+        help = "The number on the camera. Used to load calibration matrix"
     )
     return parser.parse_args()
 
@@ -126,6 +131,9 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
 
     # Downsample
     cloud_down = cloud.voxel_down_sample(max(voxel_size / 2.0, 5.0))
+    if len(cloud_down.points) < 20:
+        print(f"Warning: Too few points after downsampling ({len(cloud_down.points)}). Skipping outlier removal.")
+        return cloud_down, np.arange(len(cloud_down.points), dtype=int), cloud_down
     #cloud_down = cloud
     
     # Outlier removal
@@ -161,8 +169,11 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
     
     # Estimate normals with consistent orientation
     radius_normal = voxel_size * 2
-    cloud_filtered_2.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=max_nn))
+    if len(cloud_filtered_2.points) > 3:
+        cloud_filtered_2.estimate_normals(
+            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=max_nn))
+    else:
+        print(f"Warning: Too few points for normal estimation ({len(cloud_filtered_2.points)}).")
    # cloud_filtered_2.orient_normals_towards_camera_location(np.array([0, 0, 0]))
     
     
@@ -252,6 +263,15 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
     """
     
     print("Initial allginment")
+    if len(source.points) < 20 or len(target.points) < 20:
+        print(
+            f"Warning: Too few points for ICP (source={len(source.points)}, target={len(target.points)}). Returning identity delta."
+        )
+        class _Result:
+            transformation = np.eye(4)
+            fitness = 0.0
+        return _Result(), source
+
     #draw_geometries([source, target])
     originals = [copy.deepcopy(source), copy.deepcopy(target)]
     source_down = source
@@ -292,10 +312,12 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
     
     source.estimate_normals(
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
-    source.orient_normals_towards_camera_location(np.array([0, 0, 0]))
     target.estimate_normals(
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
-    target.orient_normals_towards_camera_location(np.array([0, 0, 0]))
+    if source.has_normals() and len(source.points) > 0:
+        source.orient_normals_towards_camera_location(np.array([0, 0, 0]))
+    if target.has_normals() and len(target.points) > 0:
+        target.orient_normals_towards_camera_location(np.array([0, 0, 0]))
 
     ## 5. Medium alignment 
     medium_result = o3d.pipelines.registration.registration_icp(
@@ -377,6 +399,13 @@ def main():
 
     #transform_coords = transform_coords @ rotate_x_90
 
+
+    T_rigid_body_to_orbbec2 = np.load(f"/home/adamfi/codes/Pointclouds/Orbbec_calibrations_mocaplab/orbbec{args.cam_number}.npy")
+
+    # Keep extrinsic rotation unchanged. Only scale translation if pose/cloud pipeline is in mm.
+    T_rigid_body_to_orbbec = T_rigid_body_to_orbbec2.copy()
+    if milimeters:
+        T_rigid_body_to_orbbec[:3, 3] *= 1000.0
     
     init_transforms = []
     initial_pcs = []
@@ -396,8 +425,8 @@ def main():
         T[:3, :3] = R_mat
         T[:3, 3] = t * 1000 if milimeters else t  # Convert pose to mm as pointclouds are measured in mm
         
-        T_total =T_mean@T@transform_coords
-        
+        #T_total =T_mean@T@transform_coords
+        T_total = T @ np.linalg.inv(T_rigid_body_to_orbbec)
         
         init_transforms.append(T_total)
         pcd.transform(T_total)

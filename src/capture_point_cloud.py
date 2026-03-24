@@ -6,7 +6,7 @@ import numpy
 import argparse
 
 
-DEFAULT_ROOT_DIR = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
+DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test"
 
 save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
@@ -55,24 +55,30 @@ def save_point_cloud_to_ply(filename, point_cloud_frame, point_cloud_filter):
 def main(dir_path, n_clouds, n_images, min_points):
     # 1.Create a pipeline with default device.
     pipeline = Pipeline()
+    print(pipeline)
+    print(dir(pipeline))
     # 2.Create config.
     config = Config()
 
     device = pipeline.get_device()
+    print(device)
+    print(dir(device))
     depth_sensor = device.get_sensor(OBSensorType.DEPTH_SENSOR)
 
     filter_list = depth_sensor.get_recommended_filters()
 
   
         
-    # 3.Enable color profile
+    # 3.Enable color profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.RGB, 0)
+    
+    color_profile = profile_list.get_video_stream_profile(640, 400, OBFormat.RGB,0)
     config.enable_stream(color_profile)
 
-    # 4.Enable depth profile
+    # 4.Enable depth profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-    depth_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.Y16, 0)
+
+    depth_profile = profile_list.get_video_stream_profile(640, 400, OBFormat.Y16,0)
 
     config.enable_stream(depth_profile)
 
