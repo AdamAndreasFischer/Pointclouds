@@ -438,6 +438,10 @@ def main():
       
     world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=250.0)
     o3d.visualization.draw_geometries(initial_pcs + pose_frames + [world_frame])
+    in_pcd =  o3d.geometry.PointCloud()
+    for pcd in  initial_pcs:
+        in_pcd+=pcd
+    o3d.io.write_point_cloud( "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test_dist/inital_test_pcd.ply", in_pcd, write_ascii=True)
 
     # Down sample and denoise clouds
     preprocessed_pcds = []

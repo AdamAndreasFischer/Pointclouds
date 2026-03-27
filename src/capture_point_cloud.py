@@ -6,7 +6,7 @@ import numpy
 import argparse
 
 
-DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test"
+DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/scrap_clouds"
 
 save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
@@ -72,13 +72,13 @@ def main(dir_path, n_clouds, n_images, min_points):
     # 3.Enable color profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
     
-    color_profile = profile_list.get_video_stream_profile(640, 400, OBFormat.RGB,0)
+    color_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.RGB,0)
     config.enable_stream(color_profile)
 
     # 4.Enable depth profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
 
-    depth_profile = profile_list.get_video_stream_profile(640, 400, OBFormat.Y16,0)
+    depth_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.Y16,0)
 
     config.enable_stream(depth_profile)
 
@@ -92,7 +92,7 @@ def main(dir_path, n_clouds, n_images, min_points):
     # 7.Create point cloud filter
     point_cloud_filter = PointCloudFilter()
 
-    
+    #temporal_filter = TemporalFilter(alpha=0.5)
 
     # 8.Create a filter to align depth frame to color frame
     align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
@@ -116,7 +116,7 @@ def main(dir_path, n_clouds, n_images, min_points):
         if frames is None:
             print("No frames received")
             continue
-     
+        #frames = temporal_filter.process(frames)
         # 10.Filter the data
         align_frame = align_filter.process(frames)
         if not align_frame:

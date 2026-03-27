@@ -226,6 +226,7 @@ def main():
 				if T_b2cam is None:
 					continue
 				
+
 				mocap_pose = mocap_listener.get_latest()
 				if mocap_pose is None:
 					time.sleep(0.002)
@@ -247,13 +248,15 @@ def main():
 					rot_step_deg, trans_step_m = relative_motion(last_accepted_rigid_pose, T_rigid2world)
 					if rot_step_deg < args.min_rot_step_deg and trans_step_m < args.min_trans_step_m:
 						continue
-
+				print(f"target_to_cam {T_b2cam[:3, 3]}")
+				if np.any(T_b2cam[:3, 3].astype(np.float64)>1.2) or np.any(T_b2cam[:3, 3].astype(np.float64)<-1.2):
+					continue
 				R_gripper2base.append(T_rigid2world[:3, :3].astype(np.float64))
 				t_gripper2base.append(T_rigid2world[:3, 3].reshape(3, 1).astype(np.float64))
 				R_target2cam.append(T_b2cam[:3, :3].astype(np.float64))
 				t_target2cam.append(T_b2cam[:3, 3].reshape(3, 1).astype(np.float64))
 				last_accepted_rigid_pose = T_rigid2world.copy()
-
+				
 				print(f"Collected {len(R_gripper2base)}/{args.num_samples}")
 
 		if len(R_gripper2base) < 5:
