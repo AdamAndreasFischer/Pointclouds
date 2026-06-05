@@ -6,12 +6,17 @@ import numpy
 import argparse
 
 
-DEFAULT_ROOT_DIR = "/home/adamfi/Codes/Pointclouds/pointclouds/room_final2"
+DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/scrap_clouds"
 
 save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
     os.mkdir(save_points_dir)
 
+os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
+os.environ["DISPLAY"] = ":1"
+os.environ["GDK_BACKEND"] = "x11"
+os.environ["PYOPENGL_PLATFORM"] = "glx"
+os.environ["XDG_SESSION_TYPE"] = "x11"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Capture and save Orbbec point clouds")
@@ -55,24 +60,30 @@ def save_point_cloud_to_ply(filename, point_cloud_frame, point_cloud_filter):
 def main(dir_path, n_clouds, n_images, min_points):
     # 1.Create a pipeline with default device.
     pipeline = Pipeline()
+    print(pipeline)
+    print(dir(pipeline))
     # 2.Create config.
     config = Config()
 
     device = pipeline.get_device()
+    print(device)
+    print(dir(device))
     depth_sensor = device.get_sensor(OBSensorType.DEPTH_SENSOR)
 
     filter_list = depth_sensor.get_recommended_filters()
 
   
         
-    # 3.Enable color profile
+    # 3.Enable color profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-    color_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.RGB, 0)
+    
+    color_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.RGB,0)
     config.enable_stream(color_profile)
 
-    # 4.Enable depth profile
+    # 4.Enable depth profile (640x400 @ 5 FPS)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
-    depth_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.Y16, 0)
+
+    depth_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.Y16,0)
 
     config.enable_stream(depth_profile)
 
@@ -86,7 +97,7 @@ def main(dir_path, n_clouds, n_images, min_points):
     # 7.Create point cloud filter
     point_cloud_filter = PointCloudFilter()
 
-    
+    #temporal_filter = TemporalFilter(alpha=0.5)
 
     # 8.Create a filter to align depth frame to color frame
     align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
@@ -97,7 +108,7 @@ def main(dir_path, n_clouds, n_images, min_points):
 
     point_cloud_filter.set_create_point_format(OBFormat.RGB_POINT)
     print("Capture pointcloud")
-    i=1
+    i=0
     if not os.path.exists(os.path.join(dir_path, f"Cloud_pose{n_clouds}")):
         os.mkdir(os.path.join(dir_path, f"Cloud_pose{n_clouds}"))
     pcds = []
@@ -110,8 +121,12 @@ def main(dir_path, n_clouds, n_images, min_points):
         if frames is None:
             print("No frames received")
             continue
-     
+        #frames = temporal_filter.process(frames)
         # 10.Filter the data
+        if i == 0:
+            i+=1
+            continue
+        
         align_frame = align_filter.process(frames)
         if not align_frame:
             continue

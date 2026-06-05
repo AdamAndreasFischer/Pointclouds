@@ -5,10 +5,7 @@ import os
 import argparse
 from scipy.spatial.transform import Rotation as R
 import copy
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import multiprocessing
-import time
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
 os.environ["DISPLAY"] = ":1"
@@ -18,6 +15,46 @@ os.environ["XDG_SESSION_TYPE"] = "x11"
 
 NUM_THREADS = max(1, multiprocessing.cpu_count())
 DEFAULT_ROOT_DIR = "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test_cam3"
+vice = o3d.core.Device("CUDA:1")
+
+
+def tensor_point_count(cloud):
+    return int(cloud.point.positions.shape[0])
+
+
+def ensure_tensor_cloud(cloud):
+    if isinstance(cloud, o3d.t.geometry.PointCloud):
+        return cloud.to(vice)
+    return o3d.t.geometry.PointCloud.from_legacy(cloud, dtype=o3d.core.Dtype.Float32).to(vice)
+
+
+def np_to_cuda_transform(transform):
+    return o3d.core.Tensor(transform, dtype=o3d.core.Dtype.Float64, device=vice)
+
+
+def cuda_transform_to_numpy(transform):
+    if isinstance(transform, o3d.core.Tensor):
+        return transform.cpu().numpy()
+    return np.asarray(transform)
+
+
+def concat_point_clouds(clouds):
+    if not clouds:
+        return o3d.t.geometry.PointCloud(vice)
+
+    positions = [ensure_tensor_cloud(c).point.positions for c in clouds if tensor_point_count(ensure_tensor_cloud(c)) > 0]
+    if not positions:
+        return o3d.t.geometry.PointCloud(vice)
+
+    merged = o3d.t.geometry.PointCloud(vice)
+    merged.point.positions = o3d.core.concatenate(positions, axis=0)
+
+    has_colors = all("colors" in ensure_tensor_cloud(c).point for c in clouds)
+    if has_colors:
+        colors = [ensure_tensor_cloud(c).point.colors for c in clouds if tensor_point_count(ensure_tensor_cloud(c)) > 0]
+        merged.point.colors = o3d.core.concatenate(colors, axis=0)
+
+    return merged
 
 
 def parse_args():
@@ -65,7 +102,7 @@ def read_clouds(path):
     paths = sorted(paths, key=len)
     clouds = []
     for ptc in paths:
-        clouds.append(o3d.io.read_point_cloud(os.path.join(path, ptc)))
+        clouds.append(o3d.t.io.read_point_cloud(os.path.join(path, ptc)).to(vice))
 
     return clouds
 
@@ -77,29 +114,34 @@ def read_multi_clouds(path, num_clouds):
     cloud_list = []
     for folder in folders:
         print(folder)
-        clouds = [cloud for cloud in os.listdir(os.path.join(path,folder)) if cloud.endswith(".ply")]
+        clouds = [cloud for cloud in os.listdir(folder) if cloud.endswith(".ply")]
         if len(clouds) < num_clouds:
             pass
         else: 
             clouds = clouds[:num_clouds]
         print(clouds)
-        pcd = o3d.io.read_point_cloud(os.path.join(folder, clouds[1]))
+        if not clouds:
+            continue
+        read_idx = min(1, len(clouds) - 1)
+        pcd = o3d.t.io.read_point_cloud(os.path.join(folder, clouds[read_idx]))
+        pcd.to(vice)
         cloud_list.append(pcd)
     return cloud_list
 
 def filter_invalid_points(cloud, min_distance=150.0, max_distance=12000.0):
     """Remove invalid near-zero and very far points (distance in mm)."""
-    points = np.asarray(cloud.points)
-    if len(points) == 0:
+    cloud = ensure_tensor_cloud(cloud)
+    if tensor_point_count(cloud) == 0:
         return cloud
 
-    distances = np.linalg.norm(points, axis=1)
-    valid_idx = np.where((distances >= min_distance) & (distances <= max_distance))[0]
+    points = cloud.point.positions
+    distances = (points * points).sum(dim=1).sqrt()
+    valid_mask = (distances >= min_distance) & (distances <= max_distance)
 
-    if len(valid_idx) == 0:
+    if int(valid_mask.sum().cpu().item()) == 0:
         return cloud
 
-    return cloud.select_by_index(valid_idx)
+    return cloud.select_by_mask(valid_mask)
 
 def pose_to_transform_matrix(pose):
     """
@@ -127,27 +169,40 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
     std_ration: [float] Deviation of points in denoising
     """
 
+    cloud = ensure_tensor_cloud(cloud)
     cloud = filter_invalid_points(cloud)
 
     # Downsample
     cloud_down = cloud.voxel_down_sample(max(voxel_size / 2.0, 5.0))
-    if len(cloud_down.points) < 20:
-        print(f"Warning: Too few points after downsampling ({len(cloud_down.points)}). Skipping outlier removal.")
-        return cloud_down, np.arange(len(cloud_down.points), dtype=int), cloud_down
-    #cloud_down = cloud
+    down_points = tensor_point_count(cloud_down)
+    if down_points < 20:
+        print(f"Warning: Too few points after downsampling ({down_points}). Skipping outlier removal.")
+        return cloud_down, np.arange(down_points, dtype=int), cloud_down
     
     # Outlier removal
     if remove_outliers:
-        cloud_filtered, ind = cloud_down.remove_statistical_outlier(
-            nb_neighbors=max_nn, std_ratio=std_ratio)
-        print(f"Statistical outlier removal: type(ind) = {type(ind)}, shape = {np.array(ind).shape}")
+        try:
+            cloud_filtered, mask_s = cloud_down.remove_statistical_outliers(
+                nb_neighbors=max_nn, std_ratio=std_ratio
+            )
+            ind = np.where(mask_s.cpu().numpy())[0].astype(int)
+        except Exception:
+            cloud_filtered = cloud_down
+            ind = np.arange(tensor_point_count(cloud_down), dtype=int)
+        print(f"Statistical outlier removal kept {len(ind)} points")
     else:
         cloud_filtered = cloud_down
-        ind = np.arange(len(cloud_down.points))  # All points kept
+        ind = np.arange(tensor_point_count(cloud_down), dtype=int)  # All points kept
 
-    cloud_filtered_2, ind_r = cloud_filtered.remove_radius_outlier(
-        nb_points=max(max_nn // 2, 12), radius=voxel_size * 2.5)
-    print(f"Radius outlier removal: type(ind_r) = {type(ind_r)}, shape = {np.array(ind_r).shape}")
+    try:
+        cloud_filtered_2, mask_r = cloud_filtered.remove_radius_outliers(
+            nb_points=max(max_nn // 2, 12), radius=voxel_size * 2.5
+        )
+        ind_r = np.where(mask_r.cpu().numpy())[0].astype(int)
+    except Exception:
+        cloud_filtered_2 = cloud_filtered
+        ind_r = np.arange(tensor_point_count(cloud_filtered), dtype=int)
+    print(f"Radius outlier removal kept {len(ind_r)} points")
     
     # Combine the indices: first apply statistical outlier indices, then radius outlier indices
     if remove_outliers:
@@ -169,12 +224,10 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
     
     # Estimate normals with consistent orientation
     radius_normal = voxel_size * 2
-    if len(cloud_filtered_2.points) > 3:
-        cloud_filtered_2.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=max_nn))
+    if tensor_point_count(cloud_filtered_2) > 3:
+        cloud_filtered_2.estimate_normals(radius=radius_normal, max_nn=max_nn)
     else:
-        print(f"Warning: Too few points for normal estimation ({len(cloud_filtered_2.points)}).")
-   # cloud_filtered_2.orient_normals_towards_camera_location(np.array([0, 0, 0]))
+        print(f"Warning: Too few points for normal estimation ({tensor_point_count(cloud_filtered_2)}).")
     
     
     return cloud_filtered_2, combined_indices, cloud_down
@@ -182,10 +235,14 @@ def preprocess_for_registration(cloud, voxel_size, max_nn=30,std_ratio=2.0, remo
 def denoise_point_cloud(cloud, voxel_size, max_nn, std_ratio):
     """Denoise the point cloud using voxel filtering"""
 
-    cloud_filtered,_ = cloud.remove_statistical_outlier(
-            nb_neighbors=max_nn, std_ratio=std_ratio)
-    
-    cloud_filtered_2, ind_r = cloud_filtered.remove_radius_outlier(nb_points=max_nn//2, radius=voxel_size*3.0)
+    cloud = ensure_tensor_cloud(cloud)
+    cloud_filtered, _ = cloud.remove_statistical_outliers(
+        nb_neighbors=max_nn, std_ratio=std_ratio
+    )
+
+    cloud_filtered_2, _ = cloud_filtered.remove_radius_outliers(
+        nb_points=max_nn // 2, radius=voxel_size * 3.0
+    )
 
     return cloud_filtered_2
 
@@ -197,7 +254,8 @@ def compute_scene_leveling_transform(
     set_floor_to_z0=False,
 ):
     """Estimate one global transform that levels the dominant plane to world +Z."""
-    if len(cloud.points) < ransac_n:
+    cloud = ensure_tensor_cloud(cloud)
+    if tensor_point_count(cloud) < ransac_n:
         print("Not enough points for plane fitting. Skipping leveling.")
         return np.eye(4), None, 0
 
@@ -205,13 +263,15 @@ def compute_scene_leveling_transform(
         distance_threshold=distance_threshold,
         ransac_n=ransac_n,
         num_iterations=num_iterations,
+        probability=0.999,
     )
-    a, b, c, d = plane_model
+    plane_model_np = plane_model.cpu().numpy().reshape(-1)
+    a, b, c, d = plane_model_np
     normal = np.array([a, b, c], dtype=np.float64)
     n_norm = np.linalg.norm(normal)
     if n_norm < 1e-12:
         print("Degenerate floor normal. Skipping leveling.")
-        return np.eye(4), plane_model, len(inliers)
+        return np.eye(4), plane_model_np, int(inliers.shape[0])
 
     normal /= n_norm
     if normal[2] < 0:
@@ -229,7 +289,7 @@ def compute_scene_leveling_transform(
         angle = np.arctan2(axis_norm, dot)
         R_align = R.from_rotvec(axis * angle).as_matrix()
 
-    points = np.asarray(cloud.points)
+    points = cloud.point.positions.cpu().numpy()
     centroid = points.mean(axis=0)
 
     T_to_origin = np.eye(4)
@@ -241,15 +301,28 @@ def compute_scene_leveling_transform(
 
     leveling_transform = T_back @ T_rot @ T_to_origin
 
-    if set_floor_to_z0 and len(inliers) > 0:
-        floor_pts = points[np.array(inliers, dtype=int)]
+    inliers_np = inliers.cpu().numpy().astype(int)
+    if set_floor_to_z0 and len(inliers_np) > 0:
+        floor_pts = points[inliers_np]
         floor_pts_rot = (R_align @ (floor_pts - centroid).T).T + centroid
         mean_floor_z = float(np.mean(floor_pts_rot[:, 2]))
         Tz = np.eye(4)
         Tz[2, 3] = -mean_floor_z
         leveling_transform = Tz @ leveling_transform
 
-    return leveling_transform, plane_model, len(inliers)
+    return leveling_transform, plane_model_np, len(inliers_np)
+
+
+def run_icp_stage(source, target, max_corr_distance, init_transform, estimation, max_iteration):
+    criteria = o3d.t.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iteration)
+    return o3d.t.pipelines.registration.icp(
+        source,
+        target,
+        max_corr_distance,
+        init_transform,
+        estimation,
+        criteria,
+    )
 
 def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration = 2.0, initial_pose=None):
     """A multi-stage registration approach with progressively refined alignment
@@ -263,84 +336,75 @@ def multi_stage_registration(source, target, voxel_size, max_nn=30, std_ration =
     """
     
     print("Initial allginment")
-    if len(source.points) < 20 or len(target.points) < 20:
+    source = ensure_tensor_cloud(source)
+    target = ensure_tensor_cloud(target)
+
+    if tensor_point_count(source) < 20 or tensor_point_count(target) < 20:
         print(
-            f"Warning: Too few points for ICP (source={len(source.points)}, target={len(target.points)}). Returning identity delta."
+            f"Warning: Too few points for ICP (source={tensor_point_count(source)}, target={tensor_point_count(target)}). Returning identity delta."
         )
         class _Result:
-            transformation = np.eye(4)
+            transformation = np_to_cuda_transform(np.eye(4))
             fitness = 0.0
         return _Result(), source
 
-    #draw_geometries([source, target])
-    originals = [copy.deepcopy(source), copy.deepcopy(target)]
     source_down = source
     target_down = target
     
     radius_normal = voxel_size * 2
 
-    init_transform = np.eye(4) if initial_pose is None else initial_pose
-
-    initial_evaluation = o3d.pipelines.registration.evaluate_registration(
-        source_down, target_down, voxel_size*2, init_transform)
-    print(f"Initial alignment fitness: {initial_evaluation.fitness:.4f}")
+    init_transform = np_to_cuda_transform(np.eye(4) if initial_pose is None else initial_pose)
     
-    # 4. Coarse alignment with larger threshold
-    coarse_result = o3d.pipelines.registration.registration_icp(
-        source_down, target_down, voxel_size *6,  init_transform,
-        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=50))
+    source_down.estimate_normals(radius=radius_normal, max_nn=max_nn)
+    target_down.estimate_normals(radius=radius_normal, max_nn=max_nn)
 
-    coarse_result_fallback = o3d.pipelines.registration.registration_icp(
-        source_down, target_down, voxel_size * 10, init_transform,
-        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=80))
+    # 4. Coarse alignment with larger threshold
+    coarse_result = run_icp_stage(
+        source_down,
+        target_down,
+        voxel_size * 6,
+        init_transform,
+        o3d.t.pipelines.registration.TransformationEstimationPointToPoint(),
+        max_iteration=50,
+    )
+
+    coarse_result_fallback = run_icp_stage(
+        source_down,
+        target_down,
+        voxel_size * 10,
+        init_transform,
+        o3d.t.pipelines.registration.TransformationEstimationPointToPoint(),
+        max_iteration=80,
+    )
 
     if coarse_result_fallback.fitness > coarse_result.fitness:
         coarse_result = coarse_result_fallback
-    
-    source_course = copy.deepcopy(source)
-    #source_course.transform(coarse_result.transformation)
-    #draw_geometries([source_course, target])
-    if coarse_result.fitness <= initial_evaluation.fitness * 0.9:  # Only accept if significantly worse
-        print("Warning: Coarse ICP made alignment worse, keeping initial transform")
-        coarse_result.transformation = init_transform
-        coarse_result.fitness = initial_evaluation.fitness
-
 
     print(f"Coarse alignment fitness: {coarse_result.fitness}")
-    
-    source.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
-    target.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
-    if source.has_normals() and len(source.points) > 0:
-        source.orient_normals_towards_camera_location(np.array([0, 0, 0]))
-    if target.has_normals() and len(target.points) > 0:
-        target.orient_normals_towards_camera_location(np.array([0, 0, 0]))
 
     ## 5. Medium alignment 
-    medium_result = o3d.pipelines.registration.registration_icp(
-        source_down, target_down, voxel_size * 4, coarse_result.transformation,
-        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
+    medium_result = run_icp_stage(
+        source_down,
+        target_down,
+        voxel_size * 4,
+        coarse_result.transformation,
+        o3d.t.pipelines.registration.TransformationEstimationPointToPlane(),
+        max_iteration=100,
+    )
     
     print(f"Medium alignment fitness: {medium_result.fitness}")
-    #
+
     # 6. Fine alignment on original resolution
-    fine_result = o3d.pipelines.registration.registration_icp(
-        source, target, voxel_size*1, medium_result.transformation,
-        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
+    fine_result = run_icp_stage(
+        source,
+        target,
+        voxel_size,
+        medium_result.transformation,
+        o3d.t.pipelines.registration.TransformationEstimationPointToPlane(),
+        max_iteration=100,
+    )
     
     print(f"Fine alignment fitness: {fine_result.fitness}")
-
-    result_colored = o3d.pipelines.registration.registration_colored_icp(
-        source, target, voxel_size/2, fine_result.transformation,
-        o3d.pipelines.registration.TransformationEstimationForColoredICP(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=100))
-    
-    print(f"Colored alignment fitness: {result_colored.fitness}")
     
     return fine_result, source_down
 
@@ -400,7 +464,7 @@ def main():
     #transform_coords = transform_coords @ rotate_x_90
 
 
-    T_rigid_body_to_orbbec2 = np.load(f"/home/adamfi/codes/Pointclouds/Orbbec_calibrations_mocaplab/orbbec{args.cam_number}_RL.npy")
+    T_rigid_body_to_orbbec2 = np.load(f"/home/adamfi/codes/Pointclouds/Orbbec_calibrations_mocaplab/orbbec{args.cam_number}.npy")
 
     # Keep extrinsic rotation unchanged. Only scale translation if pose/cloud pipeline is in mm.
     T_rigid_body_to_orbbec = T_rigid_body_to_orbbec2.copy()
@@ -410,7 +474,7 @@ def main():
     init_transforms = []
     initial_pcs = []
     pose_frames = []
-    i = 0
+    
     #initial allignment of pointclouds
     for pose, pcd_original in zip(poses, original_clouds):
         pcd = copy.deepcopy(pcd_original)
@@ -428,17 +492,8 @@ def main():
         #T_total =T_mean@T@transform_coords
         T_total = T @ np.linalg.inv(T_rigid_body_to_orbbec)
         
-        t = T_total[:3,3]
-        R_mat = T_total[:3,:3]
-        quat = R.from_matrix(R_mat).as_quat(scalar_first = False)
-        
-        coord = np.concatenate([t, quat])
-        np.save(os.path.join(path, f"{args.pose_prefix}_{i+1}_init_transformed.npy"), coord)
-
-        i+=1
-
         init_transforms.append(T_total)
-        pcd.transform(T_total)
+        pcd.transform(np_to_cuda_transform(T_total))
         initial_pcs.append(pcd)
 
         frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=150.0)
@@ -446,11 +501,14 @@ def main():
         pose_frames.append(frame)
       
     world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=250.0)
-    o3d.visualization.draw_geometries(initial_pcs + pose_frames + [world_frame])
-    in_pcd =  o3d.geometry.PointCloud()
-    for pcd in  initial_pcs:
-        in_pcd+=pcd
-    o3d.io.write_point_cloud( "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test_dist/inital_test_pcd.ply", in_pcd, write_ascii=True)
+    initial_vis = [pcd.to_legacy() for pcd in initial_pcs]
+    o3d.visualization.draw_geometries(initial_vis + pose_frames + [world_frame])
+    in_pcd = concat_point_clouds(initial_pcs)
+    o3d.t.io.write_point_cloud(
+        "/home/adamfi/codes/Pointclouds/pointclouds/new_calib_test_dist/inital_test_pcd.ply",
+        in_pcd.to(o3d.core.Device("CPU:0")),
+        write_ascii=True,
+    )
 
     # Down sample and denoise clouds
     preprocessed_pcds = []
@@ -465,26 +523,22 @@ def main():
     for i in range(1,len(initial_pcs)):
         print(f"Refining cloud {i+1}...")
         source = copy.deepcopy(preprocessed_pcds[i])
-        target = o3d.geometry.PointCloud()
-        for cloud in refined_pcs: # Fit the next cloud to all previous clouds, instead of just the previous cloud. 
-            target += cloud
-
+        target = concat_point_clouds(refined_pcs)  # Fit the next cloud to all previous clouds
         target = target.voxel_down_sample(max(voxel_size / 2.0, 5.0))
 
         result, source_down = multi_stage_registration(
             source, target, voxel_size, max_nn, std_ratio, initial_pose=np.eye(4)
         )
-        resulting_transforms.append(result.transformation@init_transforms[i])
-        registration_deltas.append(result.transformation)
+        result_tf_np = cuda_transform_to_numpy(result.transformation)
+        resulting_transforms.append(result_tf_np @ init_transforms[i])
+        registration_deltas.append(result_tf_np)
 
         source_down.transform(result.transformation)
 
         refined_pcs.append(source_down)
 
     # Optional post-leveling step: preserve relative geometry while making floor horizontal
-    final_cloud = o3d.geometry.PointCloud()
-    for cloud in refined_pcs:
-        final_cloud += cloud
+    final_cloud = concat_point_clouds(refined_pcs)
 
     if post_level_scene:
         cloud_for_plane = final_cloud.voxel_down_sample(max(voxel_size, 20.0))
@@ -502,8 +556,9 @@ def main():
                 f"inliers={num_inliers}"
             )
 
+        leveling_transform_cuda = np_to_cuda_transform(leveling_transform)
         for i in range(len(refined_pcs)):
-            refined_pcs[i].transform(leveling_transform)
+            refined_pcs[i].transform(leveling_transform_cuda)
         for i in range(len(resulting_transforms)):
             resulting_transforms[i] = leveling_transform @ resulting_transforms[i]
 
@@ -539,19 +594,17 @@ def main():
     #    print(f"Cloud {i+1} registration delta:\n{delta_T}")
    
     # Save registered pointclouds
-    final_cloud = o3d.geometry.PointCloud()
-    for cloud in refined_pcs:
-        final_cloud += cloud
+    final_cloud = concat_point_clouds(refined_pcs)
 
     final_cloud_path = os.path.join(path, args.final_cloud_name)
-    o3d.io.write_point_cloud(final_cloud_path, final_cloud, write_ascii=True)
+    o3d.t.io.write_point_cloud(final_cloud_path, final_cloud.to(o3d.core.Device("CPU:0")), write_ascii=True)
     print(f"Saved merged cloud to: {final_cloud_path}")
 
     # Visualize registered clouds and final pose frames
     vis_clouds = []
     cmap = plt.get_cmap("tab20")
     for i, cloud in enumerate(refined_pcs):
-        c = copy.deepcopy(cloud)
+        c = cloud.to_legacy()
         c.paint_uniform_color(cmap(i % 20)[:3])
         vis_clouds.append(c)
 
