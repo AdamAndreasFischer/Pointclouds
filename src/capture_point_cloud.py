@@ -12,6 +12,11 @@ save_points_dir = os.path.join(os.getcwd(), "point_clouds")
 if not os.path.exists(save_points_dir):
     os.mkdir(save_points_dir)
 
+os.environ["GDK_BACKEND"] = "x11"  # Force X11 backend
+os.environ["DISPLAY"] = ":1"
+os.environ["GDK_BACKEND"] = "x11"
+os.environ["PYOPENGL_PLATFORM"] = "glx"
+os.environ["XDG_SESSION_TYPE"] = "x11"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Capture and save Orbbec point clouds")
@@ -103,7 +108,7 @@ def main(dir_path, n_clouds, n_images, min_points):
 
     point_cloud_filter.set_create_point_format(OBFormat.RGB_POINT)
     print("Capture pointcloud")
-    i=1
+    i=0
     if not os.path.exists(os.path.join(dir_path, f"Cloud_pose{n_clouds}")):
         os.mkdir(os.path.join(dir_path, f"Cloud_pose{n_clouds}"))
     pcds = []
@@ -118,6 +123,10 @@ def main(dir_path, n_clouds, n_images, min_points):
             continue
         #frames = temporal_filter.process(frames)
         # 10.Filter the data
+        if i == 0:
+            i+=1
+            continue
+        
         align_frame = align_filter.process(frames)
         if not align_frame:
             continue

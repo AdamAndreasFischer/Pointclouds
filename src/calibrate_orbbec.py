@@ -11,6 +11,72 @@ os.environ["PYOPENGL_PLATFORM"] = "glx"
 os.environ["XDG_SESSION_TYPE"] = "x11"
 import time
 
+from pathlib import Path
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+ESC_KEY = 27
+from utils.orbbec_utils import frame_to_bgr_image
+
+
+def start_orbbec_pipeline(max_retries=100, retry_delay=0.1, warmup_frames=0, preview=False):
+    pipeline = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            ctx = Context()
+            device_list = ctx.query_devices()
+            if device_list.get_count() == 0:
+                raise RuntimeError("No Orbbec device found")
+            print(f"Orbbec device found (attempt {attempt})")
+            pipeline = Pipeline()
+            break
+        except Exception as e:
+            print(f"[{attempt}/{max_retries}] Waiting for Orbbec device: {e}")
+            time.sleep(retry_delay)
+
+    if pipeline is None:
+        raise RuntimeError(f"Failed to find Orbbec device after {max_retries} attempts")
+
+    config = Config()
+    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+    try:
+        color_profile = profile_list.get_video_stream_profile(1280, 800, OBFormat.RGB, 30)
+    except Exception as e:
+        print(e)
+        color_profile = profile_list.get_default_video_stream_profile()
+        print("color profile: ", color_profile)
+    config.enable_stream(color_profile)
+    pipeline.start(config)
+
+    for _ in range(warmup_frames):
+        pipeline.wait_for_frames(1000)
+
+    if preview:
+        show_orbbec_stream(pipeline)
+
+    return pipeline
+
+
+def show_orbbec_stream(pipeline):
+    while True:
+        try:
+            frames: FrameSet = pipeline.wait_for_frames(1000)
+            if frames is None:
+                continue
+            color_frame = frames.get_color_frame()
+            if color_frame is None:
+                continue
+            color_image = frame_to_bgr_image(color_frame)
+            if color_image is None:
+                print("failed to convert frame to image")
+                continue
+            cv2.imshow("Color Viewer", color_image)
+            key = cv2.waitKey(1)
+            if key == ord('q') or key == ESC_KEY:
+                break
+        except KeyboardInterrupt:
+            break
+
+
 class Estimate_charuco_pose:
     def __init__(self):
         
@@ -20,10 +86,10 @@ class Estimate_charuco_pose:
         self.color_intrinsics = matrices["color"]
         self.depth_intrincics = matrices["depth"]
 
-        x_markers = 10
-        y_markers = 7
-        square_length = 0.037
-        marker_lenght = 0.027
+        x_markers = 7
+        y_markers = 5
+        square_length = 0.052
+        marker_lenght = 0.039
 
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
@@ -36,40 +102,9 @@ class Estimate_charuco_pose:
 
         self.charuco_detector = cv2.aruco.CharucoDetector(self.board)
         
-        # Start camera stream
-        #self.pipeline = Pipeline()
-        max_retries = 100
-        retry_delay = 0.1
-        self.pipeline = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                ctx = Context()
-                device_list = ctx.query_devices()
-                if device_list.get_count() == 0:
-                    raise RuntimeError("No Orbbec device found")
-                print(f"Orbbec device found (attempt {attempt})")
-                self.pipeline = Pipeline()
-                break
-            except Exception as e:
-                print(f"[{attempt}/{max_retries}] Waiting for Orbbec device: {e}")
-                time.sleep(retry_delay)
-        
-        if self.pipeline is None:
-            raise RuntimeError(f"Failed to find Orbbec device after {max_retries} attempts")
-        
-        self.config = Config()
-        profile_list = self.pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
-        color_profile = profile_list.get_video_stream_profile(0, 0, OBFormat.RGB, 0)
-        #print(color_profile)
-        self.config.enable_stream(color_profile)
-        #print(dir(self.config))
-
         #Initialization for solvePnP ransac
         self.rvec_old = np.zeros((3,1))
         self.tvec_old = np.zeros((3,1))
-    
-        # Start the stream
-        self.pipeline.start(self.config)
 
 
     def detect_markers(self,in_img):
@@ -127,7 +162,7 @@ class Estimate_charuco_pose:
         gray = cv2.cvtColor(in_img, cv2.COLOR_BGR2GRAY)
 
         charuco_corners, charuco_ids, marker_corners, marker_ids = self.charuco_detector.detectBoard(gray)
-
+        #print("Charuco corners: ",charuco_corners)
         if charuco_corners is None or charuco_ids is None or len(charuco_ids) == 0:
             return None, None
 
@@ -142,17 +177,32 @@ class Estimate_charuco_pose:
         if not (np.isfinite(obj_pts).all() and np.isfinite(im_pts).all()):
             return None, None
 
-        retval, rvec, tvec, inliers = cv2.solvePnPRansac(
+        K = np.array(self.color_intrinsics["camera_matrix"])
+        D = np.array(self.color_intrinsics["distortion_coefficients"])
+
+        retval, rvec, tvec, _ = cv2.solvePnPRansac(
             objectPoints=obj_pts,
             imagePoints=im_pts,
-            cameraMatrix=np.array(self.color_intrinsics["camera_matrix"]),
-            distCoeffs=np.array(self.color_intrinsics["distortion_coefficients"]),
+            cameraMatrix=K,
+            distCoeffs=D,
             rvec=self.rvec_old,
             tvec=self.tvec_old,
             useExtrinsicGuess=True,
         )
 
         if not retval:
+            # Stale initial guess may have trapped RANSAC — retry cold.
+            retval, rvec, tvec, _ = cv2.solvePnPRansac(
+                objectPoints=obj_pts,
+                imagePoints=im_pts,
+                cameraMatrix=K,
+                distCoeffs=D,
+            )
+
+        if not retval:
+            # Both attempts failed; reset state so the next call starts fresh.
+            self.rvec_old = np.zeros((3, 1))
+            self.tvec_old = np.zeros((3, 1))
             return None, None
 
         if rvec is None or tvec is None:
@@ -181,8 +231,7 @@ class Estimate_charuco_pose:
                 0.15,
             )
             cv2.imshow("image with coordinates", in_img)
-            key = cv2.waitKey(1) & 0xFF
-            return key, R_b2c, tvec
+            cv2.waitKey(1) & 0xFF
 
         return R_b2c, tvec
 
@@ -190,6 +239,27 @@ class Estimate_charuco_pose:
         gray = cv2.cvtColor(in_img, cv2.COLOR_BGR2GRAY)
 
         charuco_corners, charuco_ids, marker_corners, marker_ids = (self.charuco_detector.detectBoard(gray))
+
+        while True:
+            try:
+                frames: FrameSet = pipeline.wait_for_frames(1000)
+                if frames is None:
+                    continue
+                color_frame = frames.get_color_frame()
+                if color_frame is None:
+                    continue
+                # covert to RGB format
+                color_image = frame_to_bgr_image(color_frame)
+                if color_image is None:
+                    print("failed to convert frame to image")
+                    continue
+                cv2.imshow("Color Viewer", color_image)
+                key = cv2.waitKey(1)
+                if key == ord('q') or key == ESC_KEY:
+                    break
+            except KeyboardInterrupt:
+                break
+        cv2.destroyAllWindows()
 
         # Requires camera_matrix/dist_coeffs from calibration
         #pose_ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
@@ -248,19 +318,18 @@ class Estimate_charuco_pose:
         else:
             return None, None
 
-    def get_camera_stream(self):
-
-        if self.pipeline is not None:
-            frames = self.pipeline.wait_for_frames(100)
+    def get_camera_stream(self, pipeline):
+        if pipeline is not None:
+            frames = pipeline.wait_for_frames(100)
 
             if frames== None:
                 print("No frame from Orbbec")
-                return None
+                return None, None
             time_stamp = time.time()
             color_frame = frames.get_color_frame()
             if color_frame is None:
                 print("No color frame from Orbbec")
-                return None
+                return None, None
                 
             # Convert to numpy array
             width = color_frame.get_width()
@@ -278,10 +347,12 @@ class Estimate_charuco_pose:
             
             # Convert RGB to BGR for OpenCV
             color_image = cv2.cvtColor(color_image, cv2.COLOR_RGB2BGR)
-
+            #print(color_image)
             return color_image, time_stamp
+        else:
+            return None, None
     
-    def get_camera_pose(self, frames = None, max_attempts=150, timeout_s=6.0):
+    def get_camera_pose(self, pipeline, max_attempts=150, timeout_s=6.0):
         """Returns T_b2cam (charuco board pose in the camera frame)."""
         
         batch = 3
@@ -293,15 +364,17 @@ class Estimate_charuco_pose:
         t_start = time.time()
         while not done:
             attempts += 1
+            #print("attemts: ", attempts)
             if attempts > max_attempts or (time.time() - t_start) > timeout_s:
                 # Fail-safe: no stable board detection within limits
                 return None, None
+            frame, time_stamp = self.get_camera_stream(pipeline)
 
-            frame, time_stamp = self.get_camera_stream()
 
             if frame is None:
+                print("No frames")
                 continue
-            R_cb, t_cb = self.detect_board(frame)
+            R_cb, t_cb = self.detect_board(frame, debug=False)
             if R_cb is None or t_cb is None:
                 continue
 
@@ -351,39 +424,47 @@ def make_frame(size=0.1):
 def main():
 
     board_estimator = Estimate_charuco_pose()
-
-    
-    print(board_estimator.get_camera_pose())
-
-   
-    visualize = True
-    if visualize: 
-        vis = o3d.visualization.Visualizer()
-        vis.create_window("Board/Camera", width=1920, height=1080)
-
-        board_frame = make_frame(0.1)   # board at origin
-        cam_frame = make_frame(0.1)     # camera frame
-
-        vis.add_geometry(board_frame)
-        vis.add_geometry(cam_frame)
-        T_old = None
-        while True:
-            # get R_cam, t_cam from your pipeline
-            # R_cam: (3,3), t_cam: (3,1) in board frame
+    pipeline = start_orbbec_pipeline()
 
 
 
-            T,_= board_estimator.get_camera_pose()
-            T_cam_in_board = np.linalg.inv(T)
-            if not T_old is None:
-                cam_frame.transform(np.linalg.inv(T_old))  # reset
-            cam_frame.transform(T_cam_in_board)
-            #cam_frame = make_frame(0.1)
-            #cam_frame.transform(T)  
-            vis.update_geometry(cam_frame)
-            vis.poll_events()
-            vis.update_renderer()
-            T_old = T_cam_in_board
+    try:
+        #print(board_estimator.get_camera_pose(pipeline))
+
+
+        visualize = False
+        if visualize:
+            vis = o3d.visualization.Visualizer()
+            vis.create_window("Board/Camera", width=1920, height=1080)
+
+            board_frame = make_frame(0.1)   # board at origin
+            cam_frame = make_frame(0.1)     # camera frame
+
+            vis.add_geometry(board_frame)
+            vis.add_geometry(cam_frame)
+            T_old = None
+            while True:
+                # get R_cam, t_cam from your pipeline
+                # R_cam: (3,3), t_cam: (3,1) in board frame
+
+
+
+                T,_= board_estimator.get_camera_pose(pipeline)
+                if T is None:
+                    continue
+                T_cam_in_board = np.linalg.inv(T)
+                if not T_old is None:
+                    cam_frame.transform(np.linalg.inv(T_old))  # reset
+                cam_frame.transform(T_cam_in_board)
+                #cam_frame = make_frame(0.1)
+                #cam_frame.transform(T)
+                vis.update_geometry(cam_frame)
+                vis.poll_events()
+                vis.update_renderer()
+                T_old = T_cam_in_board
+    finally:
+        pipeline.stop()
+        cv2.destroyAllWindows()
         
         
 

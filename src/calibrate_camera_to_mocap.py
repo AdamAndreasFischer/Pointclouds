@@ -11,7 +11,7 @@ import numpy as np
 from natnet import DataFrame, NatNetClient
 from natnet.data_frame import RigidBody
 
-from calibrate_orbbec import Estimate_charuco_pose
+from calibrate_orbbec import Estimate_charuco_pose, start_orbbec_pipeline
 
 
 """
@@ -190,24 +190,27 @@ def main():
 	args = parse_args()
 
 	print("Starting Orbbec + NatNet for hand-eye calibration...")
-	board_estimator = Estimate_charuco_pose()
-	mocap_listener = MocapListener(
-		server_ip=args.server_ip,
-		client_ip=args.client_ip,
-		rigid_body_id=args.rigid_body_id,
-		use_multicast=args.use_multicast,
-	)
-
-	R_gripper2base = []  # rigid_body -> mocap_world
-	t_gripper2base = []
-	R_target2cam = []    # charuco_board -> camera
-	t_target2cam = []
-	last_accepted_rigid_pose = None
-
-	method = get_method(args.method)
-	t0 = time.time()
+	pipeline = None
 
 	try:
+		pipeline = start_orbbec_pipeline()
+		board_estimator = Estimate_charuco_pose()
+		mocap_listener = MocapListener(
+			server_ip=args.server_ip,
+			client_ip=args.client_ip,
+			rigid_body_id=args.rigid_body_id,
+			use_multicast=args.use_multicast,
+		)
+
+		R_gripper2base = []  # rigid_body -> mocap_world
+		t_gripper2base = []
+		R_target2cam = []    # charuco_board -> camera
+		t_target2cam = []
+		last_accepted_rigid_pose = None
+
+		method = get_method(args.method)
+		t0 = time.time()
+
 		with mocap_listener.client:
 			print("Collecting paired poses. Move camera to diverse poses while board is static...")
 			if args.rigid_body_id is None:
@@ -222,18 +225,23 @@ def main():
 					time.sleep(0.002)
 					continue
 
-				T_b2cam, _ = board_estimator.get_camera_pose()
+				T_b2cam, _ = board_estimator.get_camera_pose(pipeline)
+				#print("T_b2cam done")
 				if T_b2cam is None:
+					print("no board detected")
 					continue
 				
 
 				mocap_pose = mocap_listener.get_latest()
+				#print(mocap_pose)
+				#print(mocap_pose)
 				if mocap_pose is None:
+					print("No mocap pose")
 					time.sleep(0.002)
 					continue
 
-				camera_data = board_estimator.get_camera_stream()
-				if camera_data is None:
+				camera_data = board_estimator.get_camera_stream(pipeline)
+				if camera_data is None or camera_data[0] is None:
 					continue
 				frame, _ = camera_data
 				T_b2cam = board_estimator.get_camera_pose_one_frame(frame)
@@ -295,12 +303,12 @@ def main():
 
 	finally:
 		try:
-			if getattr(board_estimator, "pipeline", None) is not None:
-				board_estimator.pipeline.stop()
+			if pipeline is not None:
+				pipeline.stop()
 		except Exception:
 			pass
+		cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
 	main()
-
