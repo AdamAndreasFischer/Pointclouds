@@ -31,6 +31,20 @@ reportlab     # only for utils/generate_uniform_pdf.py
 
 The repo is organised around a **multi-camera** workflow; older single-camera scripts
 are kept for reference but are deprecated (see below).
+## 0. Directory layout for it to work together with UFOMap
+First, download and install https://github.com/AdamAndreasFischer/Manipulation_ufomap 
+The three components which needs to work together are 
+1.  The Pointcloud repo code
+2.  The shell script called `capture_cloud_and_pose_multi_cam.sh`
+3.  The UFOMap branch from the repo above
+
+The codes in Pointclouds are built after this directory structure
+root dir
+      |-Pointclouds
+      |-capture_cloud_and_pose_multi_cam.sh
+      |-UFOMap
+I.e the three components must share the same root directory to avoid having to change the pathing in the files. 
+The shell script requires changes to IP's of the PC used and mocap system, as well as paths to store captured clouds and poses. 
 
 ## 1. Calibration
 
