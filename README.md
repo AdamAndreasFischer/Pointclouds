@@ -20,7 +20,7 @@ opencv-python
 tqdm
 natnet        # NatNet streaming client
 roslibpy      # only for the deprecated ROS listener
-reportlab     # only for utils/generate_uniform_pdf.py
+
 ```
 
 ## Pipeline overview
