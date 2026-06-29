@@ -71,7 +71,7 @@ camera_world = Original_transform @ np.linalg.inv(T_rigid_body_to_camera)
 Saved calibrations live in `Orbbec_calibrations_mocaplab/` (one `.npy` per camera).
 
 ## 2. Capture
-# The code automatically sees which camera is being used from the serial number. If you number your cameras, make sure that the serial number is updated in the camera info yaml file together with the calibration
+### The code automatically sees which camera is being used from the serial number. If you number your cameras, make sure that the serial number is updated in the camera info yaml file together with the calibration
 
 - **`src/capture_point_cloud_multi_cam.py`** *(current)* — captures clouds from several
   Orbbec cameras at once into `Cloud_pose*_camera_*` folders under a root dir. Cameras are
