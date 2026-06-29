@@ -39,10 +39,12 @@ The three components which needs to work together are
 3.  The UFOMap branch from the repo above
 
 The codes in Pointclouds are built after this directory structure
-root dir
-      |-Pointclouds
+```
+root dir 
+      |-Pointclouds 
       |-capture_cloud_and_pose_multi_cam.sh
-      |-UFOMap
+      |-UFOMap 
+   ```   
 I.e the three components must share the same root directory to avoid having to change the pathing in the files. 
 The shell script requires changes to IP's of the PC used and mocap system, as well as paths to store captured clouds and poses. 
 
