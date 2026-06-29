@@ -31,6 +31,7 @@ roslibpy      # only for the deprecated ROS listener
 
 The repo is organised around a **multi-camera** workflow; older single-camera scripts
 are kept for reference but are deprecated (see below).
+
 ## 0. Directory layout for it to work together with UFOMap
 First, download and install https://github.com/AdamAndreasFischer/Manipulation_ufomap 
 The three components which needs to work together are 
@@ -70,6 +71,7 @@ camera_world = Original_transform @ np.linalg.inv(T_rigid_body_to_camera)
 Saved calibrations live in `Orbbec_calibrations_mocaplab/` (one `.npy` per camera).
 
 ## 2. Capture
+# The code automatically sees which camera is being used from the serial number. If you number your cameras, make sure that the serial number is updated in the camera info yaml file together with the calibration
 
 - **`src/capture_point_cloud_multi_cam.py`** *(current)* — captures clouds from several
   Orbbec cameras at once into `Cloud_pose*_camera_*` folders under a root dir. Cameras are
