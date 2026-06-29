@@ -1,49 +1,112 @@
 # Point cloud capture and registration
 
-## Requirements 
+Capture point clouds from Orbbec cameras, calibrate each camera to a Motive/NatNet
+mocap rigid body, and merge per-pose clouds into a single registered point cloud.
 
-This code is built for orbbec cameras, but can be changed to other cameras. If orbbec is used, the pyorbbecsdk if required. Install guide and package can be found at: https://github.com/orbbec/pyorbbecsdk
+## Requirements
 
-other packages
+This repo is designed **only with Orbbec cameras in mind** (Gemini 2L) via
+[`pyorbbecsdk`](https://github.com/orbbec/pyorbbecsdk). It can be adapted to other cameras,
+but the components that touch the hardware must be changed accordingly — capture and
+pipeline setup (`pyorbbecsdk`), the calibration intrinsics, and the stream profiles.
+
+Python packages:
+
 ```
 open3d
+numpy
 scipy
-tqdm
-natnet
 opencv-python
-roslibpy
+tqdm
+natnet        # NatNet streaming client
+roslibpy      # only for the deprecated ROS listener
+reportlab     # only for utils/generate_uniform_pdf.py
 ```
 
+## Pipeline overview
 
-## Capture pointclouds and poses
+1. **Calibrate** each camera to its mocap rigid body (`T_rigid_body_to_camera`).
+2. **Capture** point clouds and the camera pose for each viewpoint.
+3. **Register / merge** the per-pose clouds into one cloud using the captured poses.
 
-### Calibrate camera to mocap system
+The repo is organised around a **multi-camera** workflow; older single-camera scripts
+are kept for reference but are deprecated (see below).
 
-To get a good calibration between the cameras internal frame, and the mocaps rigid body coodinate system, this repo contains a script called `calibrate_camera_to_mocap.py`. This script relies on two other functionalities: A natnet pose listner, and a charuco board estimator. In this repo there are two natnet listners, one for the ROS client, and one for the Python client depending on if natnet is used with ROS or not. Currently the `calibrate_camera_to_mocap.py` is build around the natnet Python package, but it can be changed with little effort by looking at the two script which use the separate packages. 
+## 1. Calibration
 
-The charuco board pose estimator in this repo, called `calibrate_orbbec.py` is built for orbbecs gemini 2L, but the camera model can easily be changed to any other camera. Remember to import the intrinsics for the camera in use. 
+- **`src/calibrate_orbbec.py`** — Charuco board pose estimator (`Estimate_charuco_pose`),
+  built for the Gemini 2L. Update the intrinsics if you use another camera.
+- **`src/calibrate_camera_to_mocap_static.py`** *(recommended)* — static, tripod-based
+  hand-eye calibration. Capture 15–25 diverse poses; raw frames are averaged per pose
+  and a variance gate rejects motion, giving a much cleaner result than the dynamic version.
+- **`src/calibrate_camera_to_mocap.py`** — dynamic version: move the camera slowly in
+  front of a (still) A3 Charuco board. Noisier; prefer the static script.
 
-To calibrate the camera, setup a rigid body for it in motive, and get a large charuco board, preferably A3 format. Start the script and move the camera SLOWLY infront of the charuco board. It needs to move away and towards, as well as rotate in relation to the board. Keep the board still. 
+Both calibration scripts use `cv2.calibrateHandEye` and need the NatNet **server IP**
+(Motive stream) and **client IP** (receiving PC) on the same `/24` subnet
+(e.g. `192.168.111.10` / `192.168.111.20`). The result `T_rigid_body_to_camera` is
+applied to a mocap pose as:
 
-If the script detects unreasonable distances in calibration, it will tell you and you should rerun the script. Move slower if this happens. 
+```
+camera_world = Original_transform @ np.linalg.inv(T_rigid_body_to_camera)
+```
 
-The calibration transform T_rigid_body_to_camera is then printed in the terminal. To use it, multiply it with the pose captured from natnet as follows: 
-`Original_transform @ np.linalg.inv(T_rigid_body_to_camera)`
+Saved calibrations live in `Orbbec_calibrations_mocaplab/` (one `.npy` per camera).
 
-When calling the script, it expects atleast arguments for the server ip (motive stream) and client ip (reciveing pc). Notice that these IPs must be on the same subnet, i.e the IPs should coindice in the first three numbers. For example 192.168.111.10 and 192.168.111.20. 
+## 2. Capture
 
-### Capture Point clouds
-In order to capture pointclouds, the `capture_point_clouds.py` script must be modified to fit the camera in use. The script captures as many clouds as specified and saves them in a Cloud_poseX folder in the specified directory. The folders number is based on the amount of folders already in the directory. The code filters out clouds with points less than a set threshold, depends on your camera.
+- **`src/capture_point_cloud_multi_cam.py`** *(current)* — captures clouds from several
+  Orbbec cameras at once into `Cloud_pose*_camera_*` folders under a root dir. Cameras are
+  selected via `--camera-ids` and mapped to serials through `utils/camera_data.yml`
+  (or `--serials`). Clouds below a point-count threshold are discarded.
 
-Before using, create a folder for the pointclouds, otherwise it will flood the main directory with clouds.
+> **`camera_data*.yml`** holds, per camera, its **serial number**, mocap **`rigid_body_id`**,
+> and the **`calibration`** matrix (`T_rigid_body_to_camera`, from step 1). The multi-cam
+> scripts key off this file, so it must be filled in for your cameras — and the serial/rigid-body
+> fields are Orbbec/NatNet specific, so adapting to another camera model means appropriating
+> them (and the scripts that read them) accordingly.
+- **`src/natnet_pose_listener_multi_cam.py`** *(current)* — listens to NatNet and saves one
+  pose per camera rigid body (`pose_capture*_camera_*.npy`), using the same `camera_data.yml`.
+- **`src/natnet_pose_listener.py`** — single-camera NatNet listener; saves `pose_*.npy`.
 
-### Capture poses
-In order to capture poses with `ros_pose_listener.py`, a rosmaster with `natnet_for_ros` and `rosbridge` must be setup to recieve and publish poses of the cameras from the motive software. The pose is then save in the specified directory named pose_x.npy based on the ammount of poses already in the directory
+Create the output directory before capturing so clouds don't flood the working dir.
 
+> **Coordinate frames:** the camera's internal axes may differ from the mocap/RViz pose
+> axes. Before registering, compare the two and set the `transform_coords` matrix in the
+> registration script accordingly, or alignment will fail.
 
-Before registering the pointclouds with the captured poses, it is important to compare the internal coordinate system of the camera to the coordinate system of camera pose in Rviz as the xyz directions can differ and will result in no alligment. Modify the transfrom_coords in `Multi_stage_icp.py` to represent the coordinate system transform from the internal coordinate system to the Rviz coordinate system. 
+## 3. Register / merge
 
-### Register pointclouds
+- **`src/Multi_stage_icp_multi_cam.py`** *(current)* — calibration-only multi-camera
+  alignment. Keeps the `Multi_stage_icp` name for compatibility but **intentionally skips
+  ICP**, relying on the per-camera calibration to place each cloud.
+- **`src/Multi_stage_icp_cuda.py`** — CUDA/tensor Open3D variant of multi-stage ICP for
+  larger clouds (uses an Open3D `CUDA` device).
+- **`src/pointcloud_stitcher.py`** — simple pose-based stitcher: loads poses + clouds from a
+  folder and transforms them into a common frame.
 
-`Multi_stage_icp.py` is used to register the pointclouds from the initial positions captured by the mocap system. The script takes the clouds and poses and registers them with increasingly finer precision. When the registration is done, a preview of the registered clouds is shown and the registered poses and the alligned pointclouds are saved. **Note** that the current script expects the pointclouds to be in milimeters instead of meters. Check the camera for information on this.
+> Several scripts expect point clouds in **millimetres**, not metres — check your camera.
 
+## Layout
+
+```
+src/      capture, calibration, pose-listening and registration scripts
+utils/    Orbbec helpers, point cloud / pose I/O, camera_data*.yml, misc tools
+tests/    experiments: denoising, grid/parameter sweeps, loop closure, TEASER++
+stubs/    pyorbbecsdk type stubs
+Orbbec_calibrations_mocaplab/   saved per-camera calibration matrices (.npy)
+pointclouds/, results/          captured data and outputs
+```
+
+Useful `utils/`: `orbbec_utils.py` (frame → BGR conversion), `pointcloud_utils.py`
+(load poses/clouds, pose → 4×4 transform), `get_serial.py` (list connected camera serials),
+`detect_floor_plane.py` in `src/` (largest-plane / floor detection).
+
+## Deprecated
+
+These predate the multi-camera workflow and are kept only for reference:
+
+- **`src/ros_pose_listener.py`** — pose capture over `rosbridge`/`roslibpy`, requiring a
+  ROS master running `natnet_for_ros`. Superseded by the direct NatNet listeners above.
+- **`src/Multi_stage_icp.py`** — single-camera multi-stage ICP registration.
+- **`src/capture_point_cloud.py`** — single-camera capture.
